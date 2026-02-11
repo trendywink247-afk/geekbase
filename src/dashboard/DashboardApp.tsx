@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, Link2, Bot, Bell, Terminal, Settings,
@@ -28,6 +28,12 @@ export function DashboardApp() {
   const logout = useAuthStore((s) => s.logout);
   const usage = useDashboardStore((s) => s.usage);
   const agent = useDashboardStore((s) => s.agent);
+  const loadDashboard = useDashboardStore((s) => s.loadDashboard);
+
+  // Load all dashboard data from backend on mount
+  useEffect(() => {
+    loadDashboard();
+  }, [loadDashboard]);
 
   const menuItems = [
     { id: 'overview' as PageType, label: 'Overview', icon: LayoutDashboard },
@@ -188,7 +194,7 @@ export function DashboardApp() {
           <div className="flex items-center gap-4">
             {/* Credits Badge */}
             <div className="px-3 py-1.5 rounded-full bg-[#7B61FF]/10 border border-[#7B61FF]/30">
-              <span className="text-xs text-[#7B61FF] font-mono">12,450 credits</span>
+              <span className="text-xs text-[#7B61FF] font-mono">{(user?.credits ?? 0).toLocaleString()} credits</span>
             </div>
 
             {/* User Avatar */}
