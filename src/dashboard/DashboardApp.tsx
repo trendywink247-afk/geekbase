@@ -1,18 +1,8 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  LayoutDashboard,
-  Link2,
-  Bot,
-  Bell,
-  Terminal,
-  Settings,
-  User,
-  LogOut,
-  ChevronRight,
-  Sparkles,
-  DollarSign,
-  Compass
+  LayoutDashboard, Link2, Bot, Bell, Terminal, Settings,
+  User, LogOut, ChevronRight, Sparkles, DollarSign, Compass, Palette
 } from 'lucide-react';
 import { OverviewPage } from './pages/OverviewPage';
 import { ConnectionsPage } from './pages/ConnectionsPage';
@@ -20,6 +10,9 @@ import { AgentSettingsPage } from './pages/AgentSettingsPage';
 import { RemindersPage } from './pages/RemindersPage';
 import { TerminalPage } from './pages/TerminalPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { AlexButton } from '@/components/AlexButton';
+import { AgentChatPanel } from '@/components/AgentChatPanel';
+import { AgentDesignWizard } from '@/components/AgentDesignWizard';
 import { useAuthStore } from '@/stores/authStore';
 import { useDashboardStore } from '@/stores/dashboardStore';
 
@@ -29,9 +22,12 @@ export function DashboardApp() {
   const navigate = useNavigate();
   const [currentPage, setCurrentPage] = useState<PageType>('overview');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [wizardOpen, setWizardOpen] = useState(false);
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
   const usage = useDashboardStore((s) => s.usage);
+  const agent = useDashboardStore((s) => s.agent);
 
   const menuItems = [
     { id: 'overview' as PageType, label: 'Overview', icon: LayoutDashboard },
@@ -115,9 +111,27 @@ export function DashboardApp() {
           </button>
         </nav>
 
+        {/* Design Assistant CTA */}
+        {!sidebarCollapsed && (
+          <div className="mx-3 mt-2">
+            <button
+              onClick={() => setWizardOpen(true)}
+              className="w-full p-3 rounded-xl bg-gradient-to-r from-[#7B61FF]/20 to-[#FF61DC]/10 border border-[#7B61FF]/30 hover:border-[#7B61FF]/50 transition-all group"
+            >
+              <div className="flex items-center gap-2">
+                <Palette className="w-4 h-4 text-[#FF61DC] group-hover:scale-110 transition-transform" />
+                <span className="text-xs font-medium text-[#F4F6FF]">Design Assistant</span>
+              </div>
+              <p className="text-[10px] text-[#A7ACB8] mt-1 text-left">
+                {agent.name} &middot; {agent.mode} &middot; {agent.voice}
+              </p>
+            </button>
+          </div>
+        )}
+
         {/* Spend indicator */}
         {!sidebarCollapsed && (
-          <div className="mx-3 mt-4 p-3 rounded-xl bg-[#05050A] border border-[#7B61FF]/20">
+          <div className="mx-3 mt-3 p-3 rounded-xl bg-[#05050A] border border-[#7B61FF]/20">
             <div className="flex items-center gap-2 mb-2">
               <DollarSign className="w-4 h-4 text-[#61FF7B]" />
               <span className="text-xs text-[#A7ACB8]">This month</span>
@@ -194,6 +208,17 @@ export function DashboardApp() {
           {renderPage()}
         </div>
       </main>
+
+      {/* Floating Alex orb */}
+      <div className="fixed bottom-8 right-8 z-50">
+        <AlexButton context="dashboard" onOpenChat={() => setChatOpen(true)} />
+      </div>
+
+      {/* Slide-out agent chat */}
+      <AgentChatPanel isOpen={chatOpen} onClose={() => setChatOpen(false)} />
+
+      {/* Agent design wizard */}
+      <AgentDesignWizard isOpen={wizardOpen} onClose={() => setWizardOpen(false)} />
     </div>
   );
 }
