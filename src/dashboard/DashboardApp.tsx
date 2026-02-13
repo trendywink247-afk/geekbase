@@ -52,7 +52,7 @@ export function DashboardApp() {
   const renderPage = () => {
     switch (currentPage) {
       case 'overview':
-        return <OverviewPage onViewPortfolio={(u) => navigate(`/portfolio/${u}`)} />;
+        return <OverviewPage onViewPortfolio={(u) => navigate(`/portfolio/${u}`)} onNavigate={(page: string) => setCurrentPage(page as PageType)} onRefresh={loadDashboard} onOpenChat={() => setChatOpen(true)} />;
       case 'connections':
         return <ConnectionsPage />;
       case 'agent':
@@ -64,7 +64,7 @@ export function DashboardApp() {
       case 'settings':
         return <SettingsPage />;
       default:
-        return <OverviewPage onViewPortfolio={(u) => navigate(`/portfolio/${u}`)} />;
+        return <OverviewPage onViewPortfolio={(u) => navigate(`/portfolio/${u}`)} onNavigate={(page: string) => setCurrentPage(page as PageType)} onRefresh={loadDashboard} onOpenChat={() => setChatOpen(true)} />;
     }
   };
 
