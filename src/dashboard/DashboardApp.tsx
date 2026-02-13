@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  LayoutDashboard, Link2, Bot, Bell, Terminal, Settings,
+  LayoutDashboard, Link2, Bot, Bell, Terminal, Settings, Zap,
   User, LogOut, ChevronRight, Sparkles, DollarSign, Compass, Palette
 } from 'lucide-react';
 import { OverviewPage } from './pages/OverviewPage';
@@ -10,13 +10,14 @@ import { AgentSettingsPage } from './pages/AgentSettingsPage';
 import { RemindersPage } from './pages/RemindersPage';
 import { TerminalPage } from './pages/TerminalPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { AutomationsPage } from './pages/AutomationsPage';
 import { AlexButton } from '@/components/AlexButton';
 import { AgentChatPanel } from '@/components/AgentChatPanel';
 import { AgentDesignWizard } from '@/components/AgentDesignWizard';
 import { useAuthStore } from '@/stores/authStore';
 import { useDashboardStore } from '@/stores/dashboardStore';
 
-type PageType = 'overview' | 'connections' | 'agent' | 'reminders' | 'terminal' | 'settings';
+type PageType = 'overview' | 'connections' | 'agent' | 'reminders' | 'automations' | 'terminal' | 'settings';
 
 export function DashboardApp() {
   const navigate = useNavigate();
@@ -40,6 +41,7 @@ export function DashboardApp() {
     { id: 'connections' as PageType, label: 'Connections', icon: Link2 },
     { id: 'agent' as PageType, label: 'Agent Settings', icon: Bot },
     { id: 'reminders' as PageType, label: 'Reminders', icon: Bell },
+    { id: 'automations' as PageType, label: 'Automations', icon: Zap },
     { id: 'terminal' as PageType, label: 'Terminal', icon: Terminal },
     { id: 'settings' as PageType, label: 'Settings', icon: Settings },
   ];
@@ -59,6 +61,8 @@ export function DashboardApp() {
         return <AgentSettingsPage />;
       case 'reminders':
         return <RemindersPage />;
+      case 'automations':
+        return <AutomationsPage />;
       case 'terminal':
         return <TerminalPage />;
       case 'settings':

@@ -20,17 +20,6 @@ interface AgentChatPanelProps {
   agentOwner?: string;
 }
 
-const agentResponses = [
-  "I can help with that! Let me look into it.",
-  "Great question! Based on your projects, I'd suggest starting with a prototype.",
-  "I've checked your schedule — you have a free slot tomorrow at 2 PM.",
-  "Here's what I found: your API usage is trending 12% higher this week.",
-  "Done! I've added that to your reminders for tomorrow morning.",
-  "I can set up an automation for that. Want me to connect it to your Telegram?",
-  "Your portfolio has been getting great engagement — 24 views this week!",
-  "I'd recommend using TypeScript for that project. Want me to scaffold it?",
-];
-
 const suggestedPrompts = [
   "What's on my schedule today?",
   "Show me my usage stats",
