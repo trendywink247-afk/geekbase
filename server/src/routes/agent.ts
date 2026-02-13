@@ -5,6 +5,7 @@ import { validateBody, chatSchema, commandSchema } from '../middleware/validate.
 import { db } from '../db/index.js';
 import { routeChat, type ChatMessage } from '../services/llm.js';
 import { logger } from '../logger.js';
+import { OPENCLAW_IDENTITY } from '../prompts/openclaw-system.js';
 
 export const agentRouter = Router();
 
@@ -24,18 +25,12 @@ function buildSystemPrompt(
   const reminderCount = (db.prepare('SELECT COUNT(*) as c FROM reminders WHERE user_id = ? AND completed = 0').get(userId) as { c: number })?.c || 0;
   const connectedCount = (db.prepare("SELECT COUNT(*) as c FROM integrations WHERE user_id = ? AND status = 'connected'").get(userId) as { c: number })?.c || 0;
 
-  return `You are ${agentName}, a personal AI assistant on GeekSpace — a Personal AI OS platform.
-User: ${userName}. Voice style: ${voice}. Mode: ${mode}.
+  return `${OPENCLAW_IDENTITY}
+
+--- USER SESSION ---
+Agent name: ${agentName}. User: ${userName}. Voice: ${voice}. Mode: ${mode}.
 ${customPrompt ? `Custom instructions: ${customPrompt}` : ''}
-
-Context: The user has ${reminderCount} active reminders and ${connectedCount} connected integrations.
-
-Guidelines:
-- Be ${voice} in tone. ${voice === 'professional' ? 'Use formal language.' : voice === 'witty' ? 'Be clever and a bit humorous.' : 'Be warm and approachable.'}
-- Keep responses concise (under 200 words unless asked for detail).
-- You can reference the user's dashboard features: reminders, integrations, automations, portfolio, terminal.
-- If asked to do something you can't, suggest using the terminal commands or dashboard UI.
-- Never make up data about the user. Only reference what's in your context.`;
+Active reminders: ${reminderCount}. Connected integrations: ${connectedCount}.`;
 }
 
 // ---- Agent Config CRUD ----
