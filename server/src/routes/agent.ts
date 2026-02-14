@@ -3,8 +3,10 @@ import { v4 as uuid } from 'uuid';
 import { requireAuth, type AuthRequest } from '../middleware/auth.js';
 import { validateBody, chatSchema, commandSchema } from '../middleware/validate.js';
 import { db } from '../db/index.js';
-import { routeChat, type ChatMessage } from '../services/llm.js';
+import { routeChat, classifyIntent, type ChatMessage, type Provider } from '../services/llm.js';
+import { edithChat } from '../services/edith.js';
 import { logger } from '../logger.js';
+import { config } from '../config.js';
 import { OPENCLAW_IDENTITY } from '../prompts/openclaw-system.js';
 
 export const agentRouter = Router();
@@ -66,23 +68,86 @@ agentRouter.patch('/config', requireAuth, (req: AuthRequest, res) => {
   res.json(config);
 });
 
-// ---- Real AI Chat (Tri-Brain Router) ----
+// ---- Intent-based keywords for EDITH routing heuristic ----
+
+const EDITH_KEYWORDS = [
+  'code', 'debug', 'analyze', 'plan', 'complex', 'refactor',
+  'architecture', 'explain', 'compare', 'design', 'implement',
+  'strategy', 'deep dive', 'trade-off', 'algorithm',
+];
+
+// ---- Real AI Chat (Tri-Brain Router + EDITH prefix routing) ----
 
 agentRouter.post('/chat', requireAuth, validateBody(chatSchema), async (req: AuthRequest, res) => {
-  const { message } = req.body;
+  let { message } = req.body as { message: string };
   const userId = req.userId!;
 
   try {
     const agentConfig = db.prepare('SELECT * FROM agent_configs WHERE user_id = ?').get(userId) as Record<string, unknown> | undefined;
     const user = db.prepare('SELECT name, credits FROM users WHERE id = ?').get(userId) as Record<string, unknown> | undefined;
-
     const systemPrompt = buildSystemPrompt(agentConfig, user, userId);
+
+    // ---- Determine route: /edith, /local, or auto ----
+    let forceRoute: 'edith' | 'local' | null = null;
+
+    if (message.startsWith('/edith ')) {
+      forceRoute = 'edith';
+      message = message.slice(7).trim();
+    } else if (message.startsWith('/local ')) {
+      forceRoute = 'local';
+      message = message.slice(7).trim();
+    }
+
+    // Auto-classify if no prefix
+    const intent = classifyIntent(message);
+    const lowerMsg = message.toLowerCase();
+    const edithKeywordHit = EDITH_KEYWORDS.some((kw) => lowerMsg.includes(kw));
+
+    const shouldUseEdith =
+      forceRoute === 'edith' ||
+      (forceRoute !== 'local' && (
+        intent === 'complex' || intent === 'coding' || intent === 'planning' || edithKeywordHit
+      ));
+
+    // ---- Try EDITH direct path first when warranted ----
+    if (shouldUseEdith && config.edithGatewayUrl) {
+      try {
+        const edithResult = await edithChat(message, systemPrompt);
+
+        // Log usage
+        db.prepare(`INSERT INTO usage_events (id, user_id, provider, model, tokens_in, tokens_out, cost_usd, channel, tool)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'web', 'ai.chat')`).run(
+          uuid(), userId, 'edith', 'openclaw',
+          edithResult.tokensIn, edithResult.tokensOut, 0,
+        );
+
+        const response: Record<string, unknown> = {
+          text: edithResult.text,
+          route: 'edith',
+          latencyMs: edithResult.latencyMs,
+          provider: 'edith',
+        };
+        if (config.logLevel === 'debug') {
+          response.debug = { intent, forceRoute, edithKeywordHit };
+        }
+
+        res.json(response);
+        return;
+      } catch (err) {
+        // EDITH failed — fall through to tri-brain router silently
+        logger.warn({ err, userId }, 'EDITH direct call failed, falling back to tri-brain');
+      }
+    }
+
+    // ---- Fallback: existing tri-brain router (Ollama → OpenRouter → builtin) ----
     const messages: ChatMessage[] = [{ role: 'user', content: message }];
+    const forceProvider: Provider | undefined = forceRoute === 'local' ? 'ollama' : undefined;
 
     const result = await routeChat(messages, {
       systemPrompt,
       agentName: (agentConfig?.name as string) || 'Geek',
       userCredits: (user?.credits as number) || 0,
+      forceProvider,
     });
 
     // Log usage
@@ -98,14 +163,17 @@ agentRouter.post('/chat', requireAuth, validateBody(chatSchema), async (req: Aut
       db.prepare('UPDATE users SET credits = MAX(0, credits - ?) WHERE id = ?').run(creditCost, userId);
     }
 
-    res.json({
-      reply: result.reply,
-      model: result.model,
-      provider: result.provider,
-      intent: result.intent,
+    const response: Record<string, unknown> = {
+      text: result.reply,
+      route: result.provider === 'edith' ? 'edith' : 'local',
       latencyMs: result.latencyMs,
-      tokensUsed: result.tokensIn + result.tokensOut,
-    });
+      provider: result.provider,
+    };
+    if (config.logLevel === 'debug') {
+      response.debug = { intent, model: result.model, forceRoute, tokensUsed: result.tokensIn + result.tokensOut };
+    }
+
+    res.json(response);
   } catch (err) {
     logger.error({ err, userId }, 'Chat handler error');
     res.status(500).json({ error: 'Failed to process message. Please try again.' });
