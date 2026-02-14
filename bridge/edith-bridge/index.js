@@ -1,30 +1,35 @@
 // ============================================================
-// EDITH Bridge — WebSocket ↔ HTTP bridge for OpenClaw
+// EDITH Bridge — WebSocket-RPC ↔ HTTP bridge for OpenClaw
 //
-// Connects to OpenClaw via WebSocket (ws://...:18789)
-// Exposes OpenAI-compatible HTTP endpoints so that GeekSpace's
-// edith.ts can call it exactly like any OpenAI provider.
+// OpenClaw uses JSON-RPC over WebSocket:
+//   Request:  {"id":"<uuid>","method":"<name>","params":{...}}
+//   Response: {"id":"<uuid>","ok":true,"result":{...}}
+//             {"id":"<uuid>","ok":false,"error":"..."}
+//
+// This bridge accepts OpenAI-compatible HTTP requests, translates
+// them into OpenClaw RPC calls, and returns OpenAI-compatible
+// JSON responses.
 //
 // Endpoints:
-//   POST /v1/chat/completions  — chat (forwards via WS)
+//   POST /v1/chat/completions  — chat via RPC
 //   GET  /v1/models            — model list
-//   GET  /health               — liveness / WS status
+//   GET  /health               — WS + RPC liveness
 // ============================================================
 
 import express from 'express';
 import WebSocket from 'ws';
 import { randomUUID } from 'node:crypto';
 
-// ---- Configuration (no defaults that leak secrets) ----
+// ---- Configuration ----
 
-const PORT             = parseInt(process.env.BRIDGE_PORT || '8787', 10);
-const OPENCLAW_WS_URL  = process.env.EDITH_OPENCLAW_WS || 'ws://host.docker.internal:18789';
-const TOKEN            = process.env.EDITH_TOKEN || '';
-const REQUEST_TIMEOUT  = parseInt(process.env.REQUEST_TIMEOUT_MS || '120000', 10);
-const IDLE_TIMEOUT     = parseInt(process.env.IDLE_TIMEOUT_MS || '5000', 10);
-const RECONNECT_BASE   = 1000;   // 1 s
-const RECONNECT_MAX    = 30000;  // 30 s
-const PING_INTERVAL    = 30000;  // 30 s
+const PORT            = parseInt(process.env.BRIDGE_PORT || '8787', 10);
+const OPENCLAW_WS_URL = process.env.EDITH_OPENCLAW_WS || 'ws://host.docker.internal:18789';
+const TOKEN           = process.env.EDITH_TOKEN || '';
+const CHAT_METHOD     = process.env.OPENCLAW_CHAT_METHOD || 'chat.completions';
+const REQUEST_TIMEOUT = parseInt(process.env.REQUEST_TIMEOUT_MS || '120000', 10);
+const RECONNECT_BASE  = 1000;   // 1 s
+const RECONNECT_MAX   = 30000;  // 30 s
+const PING_INTERVAL   = 30000;  // 30 s
 
 // ---- Structured logger (never logs tokens/secrets) ----
 
@@ -36,7 +41,11 @@ function log(level, msg, meta = {}) {
 }
 
 // ============================================================
-// WebSocket client — persistent connection with reconnect
+// OpenClaw WebSocket-RPC client
+//
+// Maintains a persistent WS connection and correlates
+// request/response frames by their "id" field.  Supports
+// concurrent in-flight RPC calls.
 // ============================================================
 
 class OpenClawClient {
@@ -48,13 +57,8 @@ class OpenClawClient {
     this.reconnectTimer = null;
     this.pingTimer = null;
 
-    // Current in-flight request
-    /** @type {{ resolve: Function, reject: Function, timer: any, idleTimer: any, chunks: string[] } | null} */
-    this.pending = null;
-
-    // Queued requests waiting for the current one to finish
-    /** @type {{ payload: object, resolve: Function, reject: Function }[]} */
-    this.queue = [];
+    /** In-flight RPC calls keyed by id — @type {Map<string, {resolve: Function, reject: Function, timer: any}>} */
+    this.pending = new Map();
   }
 
   // ---- Connection lifecycle ----
@@ -64,7 +68,7 @@ class OpenClawClient {
       try { this.ws.terminate(); } catch { /* ignore */ }
     }
 
-    // Build WS URL — pass token as query param AND header (cover both patterns)
+    // Pass token via query param AND Authorization header (cover both auth patterns)
     const sep = OPENCLAW_WS_URL.includes('?') ? '&' : '?';
     const wsUrl = TOKEN
       ? `${OPENCLAW_WS_URL}${sep}token=${encodeURIComponent(TOKEN)}`
@@ -82,7 +86,6 @@ class OpenClawClient {
       this.reconnectAttempt = 0;
       log('info', 'WebSocket connected');
       this._startPing();
-      this._drainQueue();
     });
 
     this.ws.on('message', (data) => this._onMessage(data.toString()));
@@ -92,14 +95,12 @@ class OpenClawClient {
       this._stopPing();
       log('warn', 'WebSocket closed', { code, reason: reason?.toString() });
 
-      // If a request was in-flight, resolve with whatever we have or reject
-      if (this.pending) {
-        if (this.pending.chunks.length > 0) {
-          this._completePending();
-        } else {
-          this._rejectPending(new Error(`WebSocket closed (code ${code})`));
-        }
+      // Reject all in-flight calls
+      for (const [id, entry] of this.pending) {
+        clearTimeout(entry.timer);
+        entry.reject(new Error(`WebSocket closed (code ${code})`));
       }
+      this.pending.clear();
 
       this._scheduleReconnect();
     });
@@ -130,115 +131,74 @@ class OpenClawClient {
     this.reconnectTimer = setTimeout(() => this.connect(), delay);
   }
 
-  // ---- Message handling ----
+  // ---- RPC message handling ----
 
   _onMessage(raw) {
-    if (!this.pending) {
-      log('debug', 'Message received with no pending request');
+    let frame;
+    try {
+      frame = JSON.parse(raw);
+    } catch {
+      log('warn', 'Non-JSON WS frame', { preview: raw.slice(0, 120) });
       return;
     }
 
-    // Reset idle timer on every message
-    if (this.pending.idleTimer) clearTimeout(this.pending.idleTimer);
-
-    const trimmed = raw.trim();
-
-    // ---- Streaming completion signals ----
-    if (trimmed === '[DONE]' || trimmed === 'data: [DONE]') {
-      this._completePending();
+    const id = frame.id;
+    if (!id || !this.pending.has(id)) {
+      // Unsolicited message — log at debug (could be a broadcast/event)
+      log('debug', 'Frame with unknown id', { id, keys: Object.keys(frame) });
       return;
     }
 
-    // Strip SSE "data: " prefix if present
-    let cleaned = trimmed;
-    if (cleaned.startsWith('data: ')) cleaned = cleaned.slice(6);
+    const entry = this.pending.get(id);
+    this.pending.delete(id);
+    clearTimeout(entry.timer);
 
-    this.pending.chunks.push(cleaned);
-
-    // ---- Detect complete (non-streaming) response ----
-    try {
-      const parsed = JSON.parse(cleaned);
-      if (
-        parsed.choices?.[0]?.finish_reason ||
-        parsed.choices?.[0]?.message?.content !== undefined ||
-        parsed.content !== undefined ||
-        parsed.response !== undefined ||
-        parsed.text !== undefined ||
-        parsed.output !== undefined
-      ) {
-        this._completePending();
-        return;
-      }
-    } catch { /* not JSON or partial — that's fine */ }
-
-    // If we haven't detected completion, wait for more data or idle timeout
-    this.pending.idleTimer = setTimeout(() => this._completePending(), IDLE_TIMEOUT);
-  }
-
-  // ---- Request lifecycle ----
-
-  _completePending() {
-    if (!this.pending) return;
-    const { resolve, timer, idleTimer, chunks } = this.pending;
-    clearTimeout(timer);
-    if (idleTimer) clearTimeout(idleTimer);
-    this.pending = null;
-    resolve(chunks);
-    this._drainQueue();
-  }
-
-  _rejectPending(err) {
-    if (!this.pending) return;
-    const { reject, timer, idleTimer } = this.pending;
-    clearTimeout(timer);
-    if (idleTimer) clearTimeout(idleTimer);
-    this.pending = null;
-    reject(err);
-    this._drainQueue();
-  }
-
-  _drainQueue() {
-    if (this.queue.length === 0 || this.pending || !this.connected) return;
-    const next = this.queue.shift();
-    this._dispatch(next.payload, next.resolve, next.reject);
-  }
-
-  _dispatch(payload, resolve, reject) {
-    const timer = setTimeout(() => {
-      if (!this.pending) return;
-      if (this.pending.chunks.length > 0) {
-        this._completePending();
-      } else {
-        this._rejectPending(new Error(`Request timed out (${REQUEST_TIMEOUT}ms)`));
-      }
-    }, REQUEST_TIMEOUT);
-
-    this.pending = { resolve, reject, timer, idleTimer: null, chunks: [] };
-
-    try {
-      this.ws.send(JSON.stringify(payload));
-      log('debug', 'Request sent to OpenClaw');
-    } catch (err) {
-      this._rejectPending(new Error(`WS send failed: ${err.message}`));
+    if (frame.ok === false || frame.error) {
+      const errMsg = typeof frame.error === 'string'
+        ? frame.error
+        : frame.error?.message || JSON.stringify(frame.error) || 'RPC error';
+      entry.reject(new Error(errMsg));
+      return;
     }
+
+    entry.resolve(frame.result);
   }
+
+  // ---- Public API ----
 
   /**
-   * Send a request payload and wait for the response.
-   * Returns an array of raw response chunks (strings).
-   * Rejects immediately if WS is not connected.
+   * Make an RPC call to OpenClaw.
+   * @param {string} method   — RPC method name (e.g. "chat.completions", "skills.status")
+   * @param {object} params   — method parameters
+   * @returns {Promise<any>}  — resolves with the "result" field from the response
    */
-  send(payload) {
+  call(method, params = {}) {
     return new Promise((resolve, reject) => {
       if (!this.connected || this.ws?.readyState !== WebSocket.OPEN) {
         reject(new Error('WebSocket not connected to OpenClaw'));
         return;
       }
-      if (this.pending) {
-        this.queue.push({ payload, resolve, reject });
-        return;
+
+      const id = randomUUID();
+
+      const timer = setTimeout(() => {
+        if (this.pending.has(id)) {
+          this.pending.delete(id);
+          reject(new Error(`RPC timeout (${REQUEST_TIMEOUT}ms) for ${method}`));
+        }
+      }, REQUEST_TIMEOUT);
+
+      this.pending.set(id, { resolve, reject, timer });
+
+      try {
+        const frame = JSON.stringify({ id, method, params });
+        this.ws.send(frame);
+        log('debug', 'RPC sent', { id, method });
+      } catch (err) {
+        this.pending.delete(id);
+        clearTimeout(timer);
+        reject(new Error(`WS send failed: ${err.message}`));
       }
-      this._dispatch(payload, resolve, reject);
     });
   }
 
@@ -246,76 +206,71 @@ class OpenClawClient {
     return this.connected && this.ws?.readyState === WebSocket.OPEN;
   }
 
+  get pendingCount() {
+    return this.pending.size;
+  }
+
   destroy() {
     this._stopPing();
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    if (this.pending) this._rejectPending(new Error('Client destroyed'));
-    for (const q of this.queue) q.reject(new Error('Client destroyed'));
-    this.queue = [];
+    for (const [, entry] of this.pending) {
+      clearTimeout(entry.timer);
+      entry.reject(new Error('Client destroyed'));
+    }
+    this.pending.clear();
     if (this.ws) { try { this.ws.terminate(); } catch { /* ignore */ } }
   }
 }
 
 // ============================================================
-// Response parser — handles many OpenClaw response formats
+// Response extractors — normalise RPC result → content string
 // ============================================================
 
-function parseChunks(chunks) {
-  if (chunks.length === 0) {
+/**
+ * Extract chat content from an RPC result.
+ * Handles multiple result shapes:
+ *   - OpenAI-like: { choices: [{ message: { content } }], usage }
+ *   - Flat fields:  { content } | { response } | { text } | { output } | { message }
+ *   - Plain string: "hello"
+ */
+function extractContent(result) {
+  if (result == null) {
     return { content: '', tokensIn: 0, tokensOut: 0 };
   }
 
-  // --- Single-frame response ---
-  if (chunks.length === 1) {
-    try {
-      return extractJSON(JSON.parse(chunks[0]));
-    } catch {
-      // Plain text response
-      return { content: chunks[0], tokensIn: 0, tokensOut: 0 };
-    }
+  // String result
+  if (typeof result === 'string') {
+    return { content: result, tokensIn: 0, tokensOut: 0 };
   }
 
-  // --- Multi-frame (streaming) response ---
-  let content = '';
-  let tokensIn = 0;
-  let tokensOut = 0;
-
-  for (const chunk of chunks) {
-    try {
-      const d = JSON.parse(chunk);
-      if (d.choices?.[0]?.delta?.content)        content += d.choices[0].delta.content;
-      else if (d.choices?.[0]?.message?.content)  content += d.choices[0].message.content;
-      else if (d.content)                         content += d.content;
-      else if (d.response)                        content += d.response;
-      else if (d.text)                            content += d.text;
-      else if (d.output)                          content += d.output;
-      if (d.usage) {
-        tokensIn  = d.usage.prompt_tokens      || tokensIn;
-        tokensOut = d.usage.completion_tokens   || tokensOut;
-      }
-    } catch {
-      content += chunk; // plain text chunk
-    }
+  // OpenAI choices format
+  if (result.choices?.[0]?.message?.content !== undefined) {
+    return {
+      content:  result.choices[0].message.content,
+      tokensIn:  result.usage?.prompt_tokens     || 0,
+      tokensOut: result.usage?.completion_tokens  || 0,
+    };
   }
 
-  if (!content) content = chunks.join('');
-  return { content, tokensIn, tokensOut };
-}
-
-function extractJSON(data) {
+  // Flat fields (try in priority order)
   const content =
-    data.choices?.[0]?.message?.content ??
-    data.choices?.[0]?.delta?.content ??
-    data.content ??
-    data.response ??
-    data.text ??
-    data.output ??
-    (typeof data === 'string' ? data : '');
-  return {
-    content,
-    tokensIn:  data.usage?.prompt_tokens     || 0,
-    tokensOut: data.usage?.completion_tokens  || 0,
-  };
+    result.content  ??
+    result.response ??
+    result.text     ??
+    result.output   ??
+    result.message  ??
+    '';
+
+  if (content) {
+    return {
+      content: typeof content === 'string' ? content : JSON.stringify(content),
+      tokensIn:  result.usage?.prompt_tokens     || result.tokens_in  || 0,
+      tokensOut: result.usage?.completion_tokens  || result.tokens_out || 0,
+    };
+  }
+
+  // Last resort: serialise the whole result
+  return { content: JSON.stringify(result), tokensIn: 0, tokensOut: 0 };
 }
 
 function estimateTokens(messages) {
@@ -334,12 +289,25 @@ const client = new OpenClawClient();
 app.use(express.json({ limit: '2mb' }));
 
 // ---- GET /health ----
-app.get('/health', (_req, res) => {
+app.get('/health', async (_req, res) => {
+  let rpcOk = false;
+
+  if (client.isConnected) {
+    try {
+      await Promise.race([
+        client.call('skills.status', {}),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('probe timeout')), 1500)),
+      ]);
+      rpcOk = true;
+    } catch { /* RPC probe failed — WS may be up but RPC unresponsive */ }
+  }
+
   res.json({
-    status: client.isConnected ? 'ok' : 'degraded',
+    status:       client.isConnected ? (rpcOk ? 'ok' : 'ws_only') : 'disconnected',
     ws_connected: client.isConnected,
-    uptime: Math.floor(process.uptime()),
-    queue_depth: client.queue.length,
+    rpc_ok:       rpcOk,
+    uptime:       Math.floor(process.uptime()),
+    pending_calls: client.pendingCount,
   });
 });
 
@@ -376,23 +344,25 @@ app.post('/v1/chat/completions', async (req, res) => {
       });
     }
 
-    log('info', 'Request received', { rid, msgCount: messages.length });
+    log('info', 'Chat request', { rid, msgCount: messages.length, method: CHAT_METHOD });
 
-    const chunks = await client.send({
+    // ---- RPC call to OpenClaw ----
+    const result = await client.call(CHAT_METHOD, {
       messages,
       max_tokens:  max_tokens  || 4096,
       temperature: temperature ?? 0.7,
       model:       model       || 'openclaw',
     });
 
-    const { content, tokensIn, tokensOut } = parseChunks(chunks);
+    const { content, tokensIn, tokensOut } = extractContent(result);
     const latency = Date.now() - start;
 
-    log('info', 'Response ready', { rid, latencyMs: latency, chars: content.length });
+    log('info', 'Chat response', { rid, latencyMs: latency, chars: content.length });
 
     const promptTokens     = tokensIn  || estimateTokens(messages);
     const completionTokens = tokensOut || Math.ceil(content.length / 4);
 
+    // ---- Return OpenAI-compatible JSON ----
     res.json({
       id:      `chatcmpl-${rid}`,
       object:  'chat.completion',
@@ -411,12 +381,12 @@ app.post('/v1/chat/completions', async (req, res) => {
     });
   } catch (err) {
     const latency = Date.now() - start;
-    log('error', 'Request failed', { rid, latencyMs: latency, error: err.message });
+    log('error', 'Chat failed', { rid, latencyMs: latency, error: err.message });
     res.status(502).json({
       error: {
-        message: 'Bridge could not reach OpenClaw',
+        message: `Bridge RPC error: ${err.message}`,
         type:    'bridge_error',
-        code:    'openclaw_unavailable',
+        code:    'openclaw_rpc_failed',
       },
     });
   }
@@ -424,7 +394,7 @@ app.post('/v1/chat/completions', async (req, res) => {
 
 // ---- Start ----
 app.listen(PORT, () => {
-  log('info', 'EDITH Bridge started', { port: PORT });
+  log('info', 'EDITH Bridge started', { port: PORT, chatMethod: CHAT_METHOD });
   client.connect();
 });
 

@@ -44,6 +44,7 @@ services:
     environment:
       - EDITH_OPENCLAW_WS=${EDITH_OPENCLAW_WS:-ws://host.docker.internal:18789}
       - EDITH_TOKEN=${EDITH_TOKEN:-}
+      - OPENCLAW_CHAT_METHOD=${OPENCLAW_CHAT_METHOD:-chat.completions}
       - BRIDGE_PORT=8787
       - REQUEST_TIMEOUT_MS=120000
       - LOG_LEVEL=${LOG_LEVEL:-info}
