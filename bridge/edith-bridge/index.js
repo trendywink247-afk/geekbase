@@ -77,7 +77,10 @@ class OpenClawClient {
     log('info', 'Connecting to OpenClaw', { url: OPENCLAW_WS_URL });
 
     this.ws = new WebSocket(wsUrl, {
-      headers: TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {},
+      headers: {
+        ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}),
+        Host: 'localhost',
+      },
       handshakeTimeout: 10_000,
     });
 
@@ -85,6 +88,18 @@ class OpenClawClient {
       this.connected = true;
       this.reconnectAttempt = 0;
       log('info', 'WebSocket connected');
+
+      // Send authentication handshake — OpenClaw gateway requires this as first frame
+      if (TOKEN) {
+        const authFrame = JSON.stringify({ type: 'auth', token: TOKEN });
+        try {
+          this.ws.send(authFrame);
+          log('info', 'Auth handshake sent');
+        } catch (err) {
+          log('error', 'Failed to send auth handshake', { error: err.message });
+        }
+      }
+
       this._startPing();
     });
 

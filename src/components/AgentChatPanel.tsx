@@ -81,38 +81,46 @@ export function AgentChatPanel({ isOpen, onClose, agentOwner }: AgentChatPanelPr
     setInput('');
     setIsTyping(true);
 
-    // Try SSE streaming first, fall back to regular chat
+    // Helper: set agent message (create or update)
+    const setAgentMsg = (update: Partial<ChatMessage>) => {
+      setMessages((prev) => {
+        const exists = prev.some((m) => m.id === agentMsgId);
+        if (exists) {
+          return prev.map((m) => m.id === agentMsgId ? { ...m, ...update } : m);
+        }
+        return [...prev, { id: agentMsgId, role: 'agent' as const, content: '', timestamp: new Date(), ...update }];
+      });
+    };
+
+    // Helper: non-streaming chat call
+    const doRegularChat = async () => {
+      const { data } = await agentService.chat(content);
+      const text = data.text || '';
+      if (!text) throw new Error('Empty response');
+      setAgentMsg({ content: text, isStreaming: false, provider: data.provider });
+    };
+
+    // Main chat logic: try streaming → fall back to regular → show error
     (async () => {
       try {
+        // Attempt SSE streaming
         const res = await agentService.chatStream(content);
 
         if (!res.ok || !res.body) {
-          // Fallback to non-streaming
-          const { data } = await agentService.chat(content);
-          setMessages((prev) => [...prev, {
-            id: agentMsgId,
-            role: 'agent',
-            content: data.text,
-            timestamp: new Date(),
-            provider: data.provider,
-          }]);
-          setIsTyping(false);
+          // Stream not available — use regular chat
+          await doRegularChat();
           return;
         }
 
         // Add empty streaming message
-        setMessages((prev) => [...prev, {
-          id: agentMsgId,
-          role: 'agent',
-          content: '',
-          timestamp: new Date(),
-          isStreaming: true,
-        }]);
+        setAgentMsg({ content: '', isStreaming: true });
         setIsTyping(false);
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
+        let accumulated = '';
+        let gotError = false;
 
         while (true) {
           const { done, value } = await reader.read();
@@ -129,23 +137,18 @@ export function AgentChatPanel({ isOpen, onClose, agentOwner }: AgentChatPanelPr
 
             try {
               const chunk = JSON.parse(jsonStr);
-              if (chunk.text) {
-                setMessages((prev) =>
-                  prev.map((m) =>
-                    m.id === agentMsgId
-                      ? { ...m, content: m.content + chunk.text }
-                      : m
-                  )
-                );
+
+              if (chunk.error) {
+                gotError = true;
               }
+
+              if (chunk.text) {
+                accumulated += chunk.text;
+                setAgentMsg({ content: accumulated });
+              }
+
               if (chunk.done) {
-                setMessages((prev) =>
-                  prev.map((m) =>
-                    m.id === agentMsgId
-                      ? { ...m, isStreaming: false, provider: chunk.provider }
-                      : m
-                  )
-                );
+                setAgentMsg({ isStreaming: false, provider: chunk.provider });
               }
             } catch {
               // skip malformed chunks
@@ -153,31 +156,25 @@ export function AgentChatPanel({ isOpen, onClose, agentOwner }: AgentChatPanelPr
           }
         }
 
+        // Streaming ended — check if we actually got content
+        if (!accumulated || gotError) {
+          // Stream was empty or errored — fall back to regular chat
+          setIsTyping(true);
+          await doRegularChat();
+          return;
+        }
+
         // Ensure streaming flag is cleared
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === agentMsgId ? { ...m, isStreaming: false } : m
-          )
-        );
+        setAgentMsg({ isStreaming: false });
       } catch {
         // Full fallback — try regular chat
         try {
-          const { data } = await agentService.chat(content);
-          setMessages((prev) => {
-            const hasAgent = prev.some(m => m.id === agentMsgId);
-            if (hasAgent) {
-              return prev.map(m => m.id === agentMsgId ? { ...m, content: data.text, isStreaming: false, provider: data.provider } : m);
-            }
-            return [...prev, { id: agentMsgId, role: 'agent' as const, content: data.text, timestamp: new Date(), provider: data.provider }];
-          });
+          setIsTyping(true);
+          await doRegularChat();
         } catch {
-          setMessages((prev) => {
-            const hasAgent = prev.some(m => m.id === agentMsgId);
-            const errMsg = { id: agentMsgId, role: 'agent' as const, content: "Sorry, I couldn't process that right now. Please try again.", timestamp: new Date() };
-            if (hasAgent) {
-              return prev.map(m => m.id === agentMsgId ? { ...m, content: errMsg.content, isStreaming: false } : m);
-            }
-            return [...prev, errMsg];
+          setAgentMsg({
+            content: "Sorry, I couldn't process that right now. Please try again.",
+            isStreaming: false,
           });
         }
       } finally {

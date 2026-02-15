@@ -429,20 +429,48 @@ agentRouter.post('/chat/stream', requireAuth, validateBody(chatSchema), async (r
 
     const latencyMs = Date.now() - start;
 
-    // Log usage
-    db.prepare(`INSERT INTO usage_events (id, user_id, provider, model, tokens_in, tokens_out, cost_usd, channel, tool)
-      VALUES (?, ?, 'ollama', ?, ?, ?, 0, 'web', 'ai.chat.stream')`).run(
-      uuid(), userId, config.ollamaModel, tokensIn, tokensOut,
-    );
+    // If streaming produced empty content, fall back to non-streaming call
+    if (!fullReply.trim()) {
+      logger.warn({ userId, latencyMs }, 'Stream produced empty reply, falling back to routeChat');
+      const result = await routeChat(
+        [{ role: 'user', content: message }],
+        { systemPrompt, agentName: (agentConfig?.name as string) || 'Geek', userCredits: (user?.credits as number) || 0 },
+      );
+      res.write(`data: ${JSON.stringify({ text: result.reply, done: false })}\n\n`);
+      res.write(`data: ${JSON.stringify({
+        text: '', done: true, provider: result.provider, model: result.model,
+        latencyMs: result.latencyMs, tier: result.provider === 'ollama' ? 'local' : 'premium', creditsUsed: result.creditCost,
+      })}\n\n`);
+    } else {
+      // Log usage
+      db.prepare(`INSERT INTO usage_events (id, user_id, provider, model, tokens_in, tokens_out, cost_usd, channel, tool)
+        VALUES (?, ?, 'ollama', ?, ?, ?, 0, 'web', 'ai.chat.stream')`).run(
+        uuid(), userId, config.ollamaModel, tokensIn, tokensOut,
+      );
 
-    // Send final event
-    res.write(`data: ${JSON.stringify({
-      text: '', done: true, provider: 'ollama', model: config.ollamaModel,
-      latencyMs, tier: 'local', creditsUsed: 0,
-    })}\n\n`);
+      // Send final event
+      res.write(`data: ${JSON.stringify({
+        text: '', done: true, provider: 'ollama', model: config.ollamaModel,
+        latencyMs, tier: 'local', creditsUsed: 0,
+      })}\n\n`);
+    }
   } catch (err) {
     logger.error({ err, userId }, 'Stream chat error');
-    res.write(`data: ${JSON.stringify({ text: '', done: true, error: 'Stream failed' })}\n\n`);
+    // Try non-streaming fallback even on stream error
+    try {
+      const agentConfig = db.prepare('SELECT * FROM agent_configs WHERE user_id = ?').get(userId) as Record<string, unknown> | undefined;
+      const user = db.prepare('SELECT name, credits FROM users WHERE id = ?').get(userId) as Record<string, unknown> | undefined;
+      const result = await routeChat(
+        [{ role: 'user', content: message }],
+        { systemPrompt: buildSystemPrompt(agentConfig, user, userId), agentName: (agentConfig?.name as string) || 'Geek', userCredits: (user?.credits as number) || 0 },
+      );
+      res.write(`data: ${JSON.stringify({ text: result.reply, done: false })}\n\n`);
+      res.write(`data: ${JSON.stringify({ text: '', done: true, provider: result.provider, model: result.model })}\n\n`);
+    } catch (fallbackErr) {
+      logger.error({ fallbackErr, userId }, 'Stream fallback also failed');
+      res.write(`data: ${JSON.stringify({ text: 'Sorry, I had trouble processing that. Please try again.', done: false })}\n\n`);
+      res.write(`data: ${JSON.stringify({ text: '', done: true, error: 'Stream failed' })}\n\n`);
+    }
   }
 
   res.end();
