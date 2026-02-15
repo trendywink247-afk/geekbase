@@ -3,11 +3,11 @@ import { v4 as uuid } from 'uuid';
 import bcrypt from 'bcryptjs';
 import { signToken, requireAuth, type AuthRequest } from '../middleware/auth.js';
 import { db } from '../db/index.js';
-import { validateBody, signupSchema, loginSchema } from '../middleware/validate.js';
+import { validateBody, signupSchema, loginSchema, onboardingSchema } from '../middleware/validate.js';
 
 export const authRouter = Router();
 
-authRouter.post('/signup', validateBody(signupSchema), (req, res) => {
+authRouter.post('/signup', validateBody(signupSchema), async (req, res) => {
   const { email, password, username, name } = req.body;
 
   const existing = db.prepare('SELECT id FROM users WHERE email = ? OR username = ?').get(email, username);
@@ -17,7 +17,7 @@ authRouter.post('/signup', validateBody(signupSchema), (req, res) => {
   }
 
   const id = uuid();
-  const passwordHash = bcrypt.hashSync(password, 10);
+  const passwordHash = await bcrypt.hash(password, 10);
 
   db.prepare(`
     INSERT INTO users (id, email, username, password_hash, name, plan, credits)
@@ -57,11 +57,11 @@ authRouter.post('/signup', validateBody(signupSchema), (req, res) => {
   });
 });
 
-authRouter.post('/login', validateBody(loginSchema), (req, res) => {
+authRouter.post('/login', validateBody(loginSchema), async (req, res) => {
   const { email, password } = req.body;
   const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email) as Record<string, unknown> | undefined;
 
-  if (!user || !bcrypt.compareSync(password, user.password_hash as string)) {
+  if (!user || !(await bcrypt.compare(password, user.password_hash as string))) {
     res.status(401).json({ error: 'Invalid credentials' });
     return;
   }
@@ -120,7 +120,7 @@ authRouter.get('/me', requireAuth, (req: AuthRequest, res) => {
   });
 });
 
-authRouter.post('/onboarding', requireAuth, (req: AuthRequest, res) => {
+authRouter.post('/onboarding', requireAuth, validateBody(onboardingSchema), (req: AuthRequest, res) => {
   const { profile, agentMode, integrations: integrationsToConnect } = req.body;
 
   // Update user profile from onboarding

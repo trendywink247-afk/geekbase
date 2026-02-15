@@ -29,6 +29,10 @@ import { featuresRouter } from './routes/features.js';
 
 const app = express();
 
+// ---- Trust proxy (Caddy/nginx reverse proxy) ----
+// Required for correct client IP in rate limiting and logging
+app.set('trust proxy', 1);
+
 // ---- Security headers ----
 app.use(helmet({
   contentSecurityPolicy: config.isProduction ? undefined : false,
@@ -67,6 +71,27 @@ const authLimiter = rateLimit({
 });
 app.use('/api/auth/login', authLimiter);
 app.use('/api/auth/signup', authLimiter);
+
+// ---- Rate limit on LLM chat endpoints (expensive) ----
+const chatLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many chat requests. Please slow down.' },
+});
+app.use('/api/agent/chat', chatLimiter);
+
+// ---- Strict rate limit on public (unauthenticated) endpoints ----
+const publicLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests. Please try again later.' },
+});
+app.use('/api/agent/chat/public', publicLimiter);
+app.use('/api/dashboard/contact', publicLimiter);
 
 // ---- Health check with live component probing ----
 app.get('/api/health', async (_req, res) => {

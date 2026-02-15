@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { v4 as uuid } from 'uuid';
 import { requireAuth, type AuthRequest } from '../middleware/auth.js';
+import { validateBody, userUpdateSchema } from '../middleware/validate.js';
 import { db } from '../db/index.js';
 
 export const usersRouter = Router();
@@ -29,7 +30,7 @@ usersRouter.get('/me', requireAuth, (req: AuthRequest, res) => {
   });
 });
 
-usersRouter.patch('/me', requireAuth, (req: AuthRequest, res) => {
+usersRouter.patch('/me', requireAuth, validateBody(userUpdateSchema), (req: AuthRequest, res) => {
   const updates = req.body;
   const fields: string[] = [];
   const values: unknown[] = [];

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { v4 as uuid } from 'uuid';
 import { requireAuth, type AuthRequest } from '../middleware/auth.js';
+import { validateBody, portfolioUpdateSchema, portfolioAiEditSchema } from '../middleware/validate.js';
 import { db } from '../db/index.js';
 
 export const portfolioRouter = Router();
@@ -22,7 +23,7 @@ portfolioRouter.get('/me', requireAuth, (req: AuthRequest, res) => {
   res.json(parsePortfolio(portfolio));
 });
 
-portfolioRouter.patch('/me', requireAuth, (req: AuthRequest, res) => {
+portfolioRouter.patch('/me', requireAuth, validateBody(portfolioUpdateSchema), (req: AuthRequest, res) => {
   const updates = req.body;
   const fields: string[] = [];
   const values: unknown[] = [];
@@ -63,7 +64,7 @@ portfolioRouter.get('/:username', (req, res) => {
   });
 });
 
-portfolioRouter.post('/ai-edit', requireAuth, (req: AuthRequest, res) => {
+portfolioRouter.post('/ai-edit', requireAuth, validateBody(portfolioAiEditSchema), (req: AuthRequest, res) => {
   const { prompt } = req.body;
   const portfolio = db.prepare('SELECT * FROM portfolios WHERE user_id = ?').get(req.userId!) as Record<string, unknown>;
   if (!portfolio) { res.status(404).json({ error: 'Portfolio not found' }); return; }

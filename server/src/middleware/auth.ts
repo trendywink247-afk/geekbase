@@ -17,7 +17,9 @@ export function requireAuth(req: AuthRequest, res: Response, next: NextFunction)
   }
 
   try {
-    const payload = verify(header.slice(7), config.jwtSecret) as { sub: string };
+    const payload = verify(header.slice(7), config.jwtSecret, {
+      algorithms: ['HS256'],
+    }) as { sub: string };
     req.userId = payload.sub;
     next();
   } catch (err) {
@@ -28,6 +30,7 @@ export function requireAuth(req: AuthRequest, res: Response, next: NextFunction)
 
 export function signToken(userId: string): string {
   return sign({ sub: userId }, config.jwtSecret, {
+    algorithm: 'HS256',
     expiresIn: config.jwtExpiresIn as SignOptions['expiresIn'],
   });
 }

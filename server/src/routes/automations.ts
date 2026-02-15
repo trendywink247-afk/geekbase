@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { v4 as uuid } from 'uuid';
 import { requireAuth, type AuthRequest } from '../middleware/auth.js';
+import { validateBody, automationCreateSchema, automationUpdateSchema } from '../middleware/validate.js';
 import { db } from '../db/index.js';
 
 export const automationsRouter = Router();
@@ -10,9 +11,8 @@ automationsRouter.get('/', requireAuth, (req: AuthRequest, res) => {
   res.json(automations);
 });
 
-automationsRouter.post('/', requireAuth, (req: AuthRequest, res) => {
+automationsRouter.post('/', requireAuth, validateBody(automationCreateSchema), (req: AuthRequest, res) => {
   const { name, triggerType, triggerConfig, actionType, actionConfig } = req.body;
-  if (!name) { res.status(400).json({ error: 'Name is required' }); return; }
 
   const id = uuid();
   db.prepare('INSERT INTO automations (id, user_id, name, trigger_type, trigger_config, action_type, action_config) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
@@ -25,7 +25,7 @@ automationsRouter.post('/', requireAuth, (req: AuthRequest, res) => {
   res.status(201).json(automation);
 });
 
-automationsRouter.patch('/:id', requireAuth, (req: AuthRequest, res) => {
+automationsRouter.patch('/:id', requireAuth, validateBody(automationUpdateSchema), (req: AuthRequest, res) => {
   const existing = db.prepare('SELECT * FROM automations WHERE id = ? AND user_id = ?').get(req.params.id, req.userId);
   if (!existing) { res.status(404).json({ error: 'Not found' }); return; }
 

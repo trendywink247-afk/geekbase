@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { v4 as uuid } from 'uuid';
 import { requireAuth, type AuthRequest } from '../middleware/auth.js';
+import { validateBody, contactSchema } from '../middleware/validate.js';
 import { db } from '../db/index.js';
 
 export const dashboardRouter = Router();
@@ -41,9 +42,8 @@ dashboardRouter.get('/stats', requireAuth, (req: AuthRequest, res) => {
   });
 });
 
-dashboardRouter.post('/contact', (req, res) => {
+dashboardRouter.post('/contact', validateBody(contactSchema), (req, res) => {
   const { name, email, company, message } = req.body;
-  if (!name || !email || !message) { res.status(400).json({ error: 'Name, email, and message are required' }); return; }
 
   db.prepare('INSERT INTO contact_submissions (id, name, email, company, message) VALUES (?, ?, ?, ?, ?)').run(
     uuid(), name, email, company || '', message

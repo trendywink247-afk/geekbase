@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { v4 as uuid } from 'uuid';
 import { requireAuth, type AuthRequest } from '../middleware/auth.js';
+import { validateBody, permissionsUpdateSchema } from '../middleware/validate.js';
 import { db } from '../db/index.js';
 
 export const integrationsRouter = Router();
@@ -39,7 +40,7 @@ integrationsRouter.post('/:id/disconnect', requireAuth, (req: AuthRequest, res) 
   res.json(parseIntegration(updated));
 });
 
-integrationsRouter.patch('/:id/permissions', requireAuth, (req: AuthRequest, res) => {
+integrationsRouter.patch('/:id/permissions', requireAuth, validateBody(permissionsUpdateSchema), (req: AuthRequest, res) => {
   const integration = db.prepare('SELECT * FROM integrations WHERE id = ? AND user_id = ?').get(req.params.id, req.userId) as Record<string, unknown> | undefined;
   if (!integration) { res.status(404).json({ error: 'Integration not found' }); return; }
 

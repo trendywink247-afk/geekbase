@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { v4 as uuid } from 'uuid';
 import { requireAuth, type AuthRequest } from '../middleware/auth.js';
-import { validateBody, chatSchema, commandSchema } from '../middleware/validate.js';
+import { validateBody, chatSchema, commandSchema, agentConfigUpdateSchema } from '../middleware/validate.js';
 import { db } from '../db/index.js';
 import { routeChat, classifyIntent, type ChatMessage, type Provider } from '../services/llm.js';
 import { edithChat } from '../services/edith.js';
@@ -43,7 +43,7 @@ agentRouter.get('/config', requireAuth, (req: AuthRequest, res) => {
   res.json(config);
 });
 
-agentRouter.patch('/config', requireAuth, (req: AuthRequest, res) => {
+agentRouter.patch('/config', requireAuth, validateBody(agentConfigUpdateSchema), (req: AuthRequest, res) => {
   const updates = req.body;
   const fields: string[] = [];
   const values: unknown[] = [];

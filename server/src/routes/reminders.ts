@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { v4 as uuid } from 'uuid';
 import { requireAuth, type AuthRequest } from '../middleware/auth.js';
+import { validateBody, reminderCreateSchema, reminderUpdateSchema } from '../middleware/validate.js';
 import { db } from '../db/index.js';
 
 export const remindersRouter = Router();
@@ -10,9 +11,8 @@ remindersRouter.get('/', requireAuth, (req: AuthRequest, res) => {
   res.json(reminders);
 });
 
-remindersRouter.post('/', requireAuth, (req: AuthRequest, res) => {
+remindersRouter.post('/', requireAuth, validateBody(reminderCreateSchema), (req: AuthRequest, res) => {
   const { text, datetime, channel, category, recurring } = req.body;
-  if (!text) { res.status(400).json({ error: 'Text is required' }); return; }
 
   const id = uuid();
   db.prepare('INSERT INTO reminders (id, user_id, text, datetime, channel, category, recurring, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
@@ -24,11 +24,11 @@ remindersRouter.post('/', requireAuth, (req: AuthRequest, res) => {
   res.status(201).json(reminder);
 });
 
-remindersRouter.patch('/:id', requireAuth, (req: AuthRequest, res) => {
+remindersRouter.patch('/:id', requireAuth, validateBody(reminderUpdateSchema), (req: AuthRequest, res) => {
   const existing = db.prepare('SELECT * FROM reminders WHERE id = ? AND user_id = ?').get(req.params.id, req.userId);
   if (!existing) { res.status(404).json({ error: 'Not found' }); return; }
 
-  const updates = req.body;
+  const updates = req.body as Record<string, unknown>;
   const fields: string[] = [];
   const values: unknown[] = [];
   for (const key of ['text', 'datetime', 'channel', 'category', 'recurring', 'completed']) {
