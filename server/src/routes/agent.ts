@@ -3,7 +3,7 @@ import { v4 as uuid } from 'uuid';
 import { requireAuth, type AuthRequest } from '../middleware/auth.js';
 import { validateBody, chatSchema, commandSchema, agentConfigUpdateSchema } from '../middleware/validate.js';
 import { db } from '../db/index.js';
-import { routeChat, classifyIntent, type ChatMessage, type Provider } from '../services/llm.js';
+import { routeChat, classifyIntent, computeCreditCost, type ChatMessage, type Provider } from '../services/llm.js';
 import { edithChat } from '../services/edith.js';
 import { logger } from '../logger.js';
 import { config } from '../config.js';
@@ -68,15 +68,12 @@ agentRouter.patch('/config', requireAuth, validateBody(agentConfigUpdateSchema),
   res.json(config);
 });
 
-// ---- Intent-based keywords for EDITH routing heuristic ----
-
-const EDITH_KEYWORDS = [
-  'code', 'debug', 'analyze', 'plan', 'complex', 'refactor',
-  'architecture', 'explain', 'compare', 'design', 'implement',
-  'strategy', 'deep dive', 'trade-off', 'algorithm',
-];
-
-// ---- Real AI Chat (Tri-Brain Router + EDITH prefix routing) ----
+// ---- Two-Tier Agent Chat ----
+//
+// Tier 1 (free):    Ollama local — handles all queries by default
+// Tier 2 (premium): Moonshot cloud — explicit /premium or /edith prefix, costs credits
+//
+// Auto-fallback: if Ollama is down, routes to cloud only when user has credits
 
 agentRouter.post('/chat', requireAuth, validateBody(chatSchema), async (req: AuthRequest, res) => {
   let { message } = req.body as { message: string };
@@ -86,91 +83,107 @@ agentRouter.post('/chat', requireAuth, validateBody(chatSchema), async (req: Aut
     const agentConfig = db.prepare('SELECT * FROM agent_configs WHERE user_id = ?').get(userId) as Record<string, unknown> | undefined;
     const user = db.prepare('SELECT name, credits FROM users WHERE id = ?').get(userId) as Record<string, unknown> | undefined;
     const systemPrompt = buildSystemPrompt(agentConfig, user, userId);
+    const userCredits = (user?.credits as number) || 0;
 
-    // ---- Determine route: /edith, /local, or auto ----
-    let forceRoute: 'edith' | 'local' | null = null;
+    // ---- Parse route prefix: /premium, /edith, /local, or auto ----
+    let forceRoute: 'premium' | 'local' | null = null;
 
-    if (message.startsWith('/edith ')) {
-      forceRoute = 'edith';
-      message = message.slice(7).trim();
+    if (message.startsWith('/premium ') || message.startsWith('/edith ')) {
+      forceRoute = 'premium';
+      const prefixLen = message.startsWith('/premium ') ? 9 : 7;
+      message = message.slice(prefixLen).trim();
     } else if (message.startsWith('/local ')) {
       forceRoute = 'local';
       message = message.slice(7).trim();
     }
 
-    // Auto-classify if no prefix
-    const intent = classifyIntent(message);
-    const lowerMsg = message.toLowerCase();
-    const edithKeywordHit = EDITH_KEYWORDS.some((kw) => lowerMsg.includes(kw));
+    // ---- Premium route: explicit opt-in via prefix ----
+    if (forceRoute === 'premium') {
+      if (userCredits <= 0) {
+        res.json({
+          text: 'You don\'t have enough credits to use the premium model. Use the free local model by default, or check your balance with `gs credits`.',
+          route: 'error',
+          tier: 'premium',
+          provider: 'builtin',
+          latencyMs: 0,
+        });
+        return;
+      }
 
-    const shouldUseEdith =
-      forceRoute === 'edith' ||
-      (forceRoute !== 'local' && (
-        intent === 'complex' || intent === 'coding' || intent === 'planning' || edithKeywordHit
-      ));
-
-    // ---- Try EDITH direct path first when warranted ----
-    if (shouldUseEdith && config.edithGatewayUrl) {
       try {
         const edithResult = await edithChat(message, systemPrompt);
+
+        // Compute credit cost
+        const creditCost = computeCreditCost('edith', edithResult.tokensIn, edithResult.tokensOut);
 
         // Log usage
         db.prepare(`INSERT INTO usage_events (id, user_id, provider, model, tokens_in, tokens_out, cost_usd, channel, tool)
           VALUES (?, ?, ?, ?, ?, ?, ?, 'web', 'ai.chat')`).run(
-          uuid(), userId, 'edith', 'openclaw',
-          edithResult.tokensIn, edithResult.tokensOut, 0,
+          uuid(), userId, 'edith', config.moonshotReasoningModel,
+          edithResult.tokensIn, edithResult.tokensOut, creditCost,
         );
 
-        const response: Record<string, unknown> = {
+        // Deduct credits
+        db.prepare('UPDATE users SET credits = MAX(0, credits - ?) WHERE id = ?').run(creditCost, userId);
+        const updatedCredits = (db.prepare('SELECT credits FROM users WHERE id = ?').get(userId) as { credits: number })?.credits ?? 0;
+
+        res.json({
           text: edithResult.text,
-          route: 'edith',
+          route: 'premium',
+          tier: 'premium',
           latencyMs: edithResult.latencyMs,
           provider: 'edith',
-        };
-        if (config.logLevel === 'debug') {
-          response.debug = { intent, forceRoute, edithKeywordHit };
-        }
-
-        res.json(response);
+          model: config.moonshotReasoningModel,
+          creditsUsed: creditCost,
+          creditsRemaining: updatedCredits,
+        });
         return;
       } catch (err) {
-        // EDITH failed — fall through to tri-brain router silently
-        logger.warn({ err, userId }, 'EDITH direct call failed, falling back to tri-brain');
+        logger.warn({ err, userId }, 'Premium (Moonshot) call failed, falling back to local');
+        // Fall through to local router
       }
     }
 
-    // ---- Fallback: existing tri-brain router (Ollama → OpenRouter → builtin) ----
+    // ---- Default: local-first router (Ollama → cloud fallback if Ollama down) ----
     const messages: ChatMessage[] = [{ role: 'user', content: message }];
-    const forceProvider: Provider | undefined = forceRoute === 'local' ? 'ollama' : undefined;
+    const intent = classifyIntent(message);
 
     const result = await routeChat(messages, {
       systemPrompt,
       agentName: (agentConfig?.name as string) || 'Geek',
-      userCredits: (user?.credits as number) || 0,
-      forceProvider,
+      userCredits,
+      forceProvider: forceRoute === 'local' ? 'ollama' : undefined,
     });
+
+    // Determine tier from actual provider used
+    const tier = (result.provider === 'ollama' || result.provider === 'builtin') ? 'local' : 'premium';
 
     // Log usage
     db.prepare(`INSERT INTO usage_events (id, user_id, provider, model, tokens_in, tokens_out, cost_usd, channel, tool)
       VALUES (?, ?, ?, ?, ?, ?, ?, 'web', 'ai.chat')`).run(
       uuid(), userId, result.provider, result.model,
-      result.tokensIn, result.tokensOut, result.costEstimate,
+      result.tokensIn, result.tokensOut, result.creditCost,
     );
 
-    // Deduct credits for paid providers
-    if (result.costEstimate > 0) {
-      const creditCost = Math.ceil(result.costEstimate * 100000);
-      db.prepare('UPDATE users SET credits = MAX(0, credits - ?) WHERE id = ?').run(creditCost, userId);
+    // Deduct credits for premium tier
+    if (result.creditCost > 0) {
+      db.prepare('UPDATE users SET credits = MAX(0, credits - ?) WHERE id = ?').run(result.creditCost, userId);
     }
+
+    const updatedCredits = (db.prepare('SELECT credits FROM users WHERE id = ?').get(userId) as { credits: number })?.credits ?? userCredits;
 
     const response: Record<string, unknown> = {
       text: result.reply,
-      route: result.provider === 'edith' ? 'edith' : 'local',
+      route: tier,
+      tier,
       latencyMs: result.latencyMs,
       provider: result.provider,
+      model: result.model,
+      creditsUsed: result.creditCost,
+      creditsRemaining: updatedCredits,
     };
     if (config.logLevel === 'debug') {
-      response.debug = { intent, model: result.model, forceRoute, tokensUsed: result.tokensIn + result.tokensOut };
+      response.debug = { intent, forceRoute, tokensUsed: result.tokensIn + result.tokensOut };
     }
 
     res.json(response);
@@ -332,18 +345,17 @@ agentRouter.post('/command', requireAuth, validateBody(commandSchema), async (re
       db.prepare(`INSERT INTO usage_events (id, user_id, provider, model, tokens_in, tokens_out, cost_usd, channel, tool)
         VALUES (?, ?, ?, ?, ?, ?, ?, 'terminal', 'ai.chat')`).run(
         uuid(), userId, result.provider, result.model,
-        result.tokensIn, result.tokensOut, result.costEstimate,
+        result.tokensIn, result.tokensOut, result.creditCost,
       );
 
-      if (result.costEstimate > 0) {
-        const creditCost = Math.ceil(result.costEstimate * 100000);
-        db.prepare('UPDATE users SET credits = MAX(0, credits - ?) WHERE id = ?').run(creditCost, userId);
+      if (result.creditCost > 0) {
+        db.prepare('UPDATE users SET credits = MAX(0, credits - ?) WHERE id = ?').run(result.creditCost, userId);
       }
 
       res.json({
         output: `[${agentConfig?.name || 'Geek'}] ${result.reply}`,
         isError: false,
-        meta: { provider: result.provider, model: result.model, latencyMs: result.latencyMs },
+        meta: { provider: result.provider, model: result.model, latencyMs: result.latencyMs, creditsUsed: result.creditCost },
       });
     } catch {
       res.json({ output: `[${agentConfig?.name || 'Geek'}] Sorry, I couldn't process that request right now. Try again shortly.`, isError: true });

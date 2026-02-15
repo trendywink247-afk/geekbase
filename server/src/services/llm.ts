@@ -29,6 +29,7 @@ export interface LLMResponse {
   tokensOut: number;
   latencyMs: number;
   costEstimate: number;
+  creditCost: number;
   intent: Intent;
 }
 
@@ -103,7 +104,8 @@ function isOpenRouterAvailable(): boolean {
 }
 
 function isEdithAvailable(): boolean {
-  return !!config.edithGatewayUrl && !!config.edithToken;
+  // Now checks for direct Moonshot API access (no longer needs EDITH bridge)
+  return !!config.openrouterApiKey && !!config.openrouterBaseUrl;
 }
 
 // ---- Ollama Call ----
@@ -161,9 +163,9 @@ async function callOpenRouter(messages: ChatMessage[]): Promise<{ content: strin
     body: JSON.stringify({
       model: config.openrouterModel,
       messages,
-      max_tokens: 2048,
+      max_tokens: config.openrouterMaxTokens,
     }),
-    signal: AbortSignal.timeout(config.ollamaTimeout),
+    signal: AbortSignal.timeout(config.openrouterTimeout),
   });
 
   if (!response.ok) {
@@ -184,26 +186,30 @@ async function callOpenRouter(messages: ChatMessage[]): Promise<{ content: strin
   };
 }
 
-// ---- EDITH / OpenClaw Call (via edith-bridge) ----
+// ---- Moonshot Reasoning Call (direct HTTP — replaces broken EDITH/WS bridge) ----
 
-async function callEdith(messages: ChatMessage[]): Promise<{ content: string; tokensIn: number; tokensOut: number }> {
-  const response = await fetch(`${config.edithGatewayUrl}/v1/chat/completions`, {
+async function callMoonshotReasoning(messages: ChatMessage[]): Promise<{ content: string; tokensIn: number; tokensOut: number }> {
+  if (!config.openrouterApiKey) {
+    throw new Error('Moonshot API key not configured (OPENROUTER_API_KEY)');
+  }
+
+  const response = await fetch(`${config.openrouterBaseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${config.edithToken}`,
+      'Authorization': `Bearer ${config.openrouterApiKey}`,
     },
     body: JSON.stringify({
+      model: config.moonshotReasoningModel,
       messages,
-      max_tokens: 4096,
-      temperature: 0.7,
+      max_tokens: config.moonshotMaxTokens,
     }),
-    signal: AbortSignal.timeout(120000),
+    signal: AbortSignal.timeout(config.moonshotTimeout),
   });
 
   if (!response.ok) {
     const text = await response.text().catch(() => '');
-    throw new Error(`EDITH returned ${response.status}: ${text}`);
+    throw new Error(`Moonshot reasoning returned ${response.status}: ${text}`);
   }
 
   const data = await response.json() as {
@@ -219,13 +225,41 @@ async function callEdith(messages: ChatMessage[]): Promise<{ content: string; to
   };
 }
 
-// ---- Cost Estimation ----
+// ---- Credit Cost ----
+//
+// Credits are the user-facing currency.  1 credit ≈ processing
+// ~200 tokens on the standard cloud model.  Ollama is always free.
+//
+// Rates (credits per 1K tokens, input+output combined):
+//   ollama / builtin  →  0  (free, local)
+//   openrouter (k2.5) →  5
+//   edith (k2-think)  → 10
+//
+// Minimum per premium call: 10 credits (prevents zero-cost micro-queries).
 
+const CREDIT_RATES: Record<Provider, number> = {
+  ollama:     0,
+  openrouter: 5,   // kimi-k2.5 — standard cloud
+  edith:      10,  // kimi-k2-thinking — heavy reasoning
+  builtin:    0,
+};
+
+const MIN_PREMIUM_CREDITS = 10;
+
+export function computeCreditCost(provider: Provider, tokensIn: number, tokensOut: number): number {
+  const rate = CREDIT_RATES[provider] ?? 0;
+  if (rate === 0) return 0;
+  const totalTokens = tokensIn + tokensOut;
+  const cost = Math.ceil((totalTokens / 1000) * rate);
+  return Math.max(cost, MIN_PREMIUM_CREDITS);
+}
+
+// Legacy USD estimate (kept for usage_events.cost_usd column)
 function estimateCost(provider: Provider, tokensIn: number, tokensOut: number): number {
   switch (provider) {
-    case 'ollama': return 0; // local, free
-    case 'openrouter': return (tokensIn * 0.000003) + (tokensOut * 0.000015); // rough estimate
-    case 'edith': return (tokensIn * 0.000002) + (tokensOut * 0.00001);
+    case 'ollama': return 0;
+    case 'openrouter': return (tokensIn * 0.0000006) + (tokensOut * 0.000002);
+    case 'edith': return (tokensIn * 0.0000012) + (tokensOut * 0.000004);
     case 'builtin': return 0;
     default: return 0;
   }
@@ -253,25 +287,27 @@ export async function routeChat(
   }
   fullMessages.push(...messages);
 
-  // Determine routing
+  // Determine routing — two-tier system:
+  //   Tier 1 (free):    Ollama local — default for ALL queries
+  //   Tier 2 (premium): Moonshot cloud — only when explicitly forced or Ollama unavailable
   let provider: Provider = opts?.forceProvider || 'ollama';
 
   if (!opts?.forceProvider) {
     const ollamaOk = await isOllamaAvailable();
 
-    if (intent === 'simple') {
-      provider = ollamaOk ? 'ollama' : (isOpenRouterAvailable() ? 'openrouter' : 'builtin');
-    } else if (intent === 'coding' || intent === 'complex' || intent === 'planning') {
-      // Prefer EDITH for heavy tasks, then OpenRouter, then Ollama
-      if (isEdithAvailable()) {
+    if (ollamaOk) {
+      // Ollama is up — always use it (free tier)
+      provider = 'ollama';
+    } else {
+      // Ollama is down — fall back to cloud if user has credits
+      const hasCredits = opts?.userCredits === undefined || opts.userCredits > 0;
+      if (hasCredits && isEdithAvailable()) {
         provider = 'edith';
-      } else if (isOpenRouterAvailable() && (opts?.userCredits === undefined || opts.userCredits > 0)) {
+      } else if (hasCredits && isOpenRouterAvailable()) {
         provider = 'openrouter';
       } else {
-        provider = ollamaOk ? 'ollama' : 'builtin';
+        provider = 'builtin';
       }
-    } else if (intent === 'automation') {
-      provider = ollamaOk ? 'ollama' : (isOpenRouterAvailable() ? 'openrouter' : 'builtin');
     }
   }
 
@@ -300,11 +336,11 @@ export async function routeChat(
         break;
       }
       case 'edith': {
-        const result = await callEdith(fullMessages);
+        const result = await callMoonshotReasoning(fullMessages);
         reply = result.content;
         tokensIn = result.tokensIn;
         tokensOut = result.tokensOut;
-        model = 'openclaw';
+        model = config.moonshotReasoningModel;
         break;
       }
       default: {
@@ -357,6 +393,7 @@ export async function routeChat(
 
   const latencyMs = Date.now() - start;
   const costEstimate = estimateCost(provider, tokensIn, tokensOut);
+  const creditCost = computeCreditCost(provider, tokensIn, tokensOut);
 
   logger.info({
     intent,
@@ -366,7 +403,8 @@ export async function routeChat(
     tokensOut,
     latencyMs,
     costEstimate,
+    creditCost,
   }, 'LLM response');
 
-  return { reply, provider, model, tokensIn, tokensOut, latencyMs, costEstimate, intent };
+  return { reply, provider, model, tokensIn, tokensOut, latencyMs, costEstimate, creditCost, intent };
 }

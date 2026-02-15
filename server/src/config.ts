@@ -58,10 +58,17 @@ export const config = {
   openrouterApiKey: process.env.OPENROUTER_API_KEY || '',
   openrouterBaseUrl: optional('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1'),
   openrouterModel: optional('OPENROUTER_MODEL', 'anthropic/claude-sonnet-4-5-20250929'),
+  openrouterTimeout: optionalInt('OPENROUTER_TIMEOUT_MS', 90000),
+  openrouterMaxTokens: optionalInt('OPENROUTER_MAX_TOKENS', 4096),
 
-  // EDITH / OpenClaw — via edith-bridge (WS→HTTP bridge)
+  // EDITH / OpenClaw — via edith-bridge (WS→HTTP bridge) [legacy, unused]
   edithGatewayUrl: process.env.EDITH_GATEWAY_URL || '',
   edithToken: process.env.EDITH_TOKEN || '',
+
+  // Moonshot reasoning model (heavy tasks — uses same API key as openrouter)
+  moonshotReasoningModel: optional('MOONSHOT_REASONING_MODEL', 'kimi-k2-thinking'),
+  moonshotTimeout: optionalInt('MOONSHOT_TIMEOUT_MS', 120000),
+  moonshotMaxTokens: optionalInt('MOONSHOT_MAX_TOKENS', 8192),
 
   // Redis (job queue)
   redisUrl: optional('REDIS_URL', 'redis://localhost:6379'),

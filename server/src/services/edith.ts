@@ -1,15 +1,14 @@
 // ============================================================
-// EDITH / OpenClaw — calls the edith-bridge service
+// EDITH / Moonshot Reasoning — direct HTTP to Moonshot API
 //
-// The bridge (http://edith-bridge:8787) handles the WebSocket-RPC
-// connection to OpenClaw and exposes an OpenAI-compatible HTTP
-// endpoint.  This module simply makes standard chat-completion
-// requests to that bridge.
+// Previously routed through the EDITH WebSocket bridge to OpenClaw.
+// Now calls the Moonshot API directly via standard OpenAI-compatible
+// HTTP endpoints, using the kimi-k2-thinking model for heavy
+// reasoning tasks.
 //
-// 120s timeout (LLM inference can be slow), 1 retry on transient
-// failures.  If EDITH_GATEWAY_URL or EDITH_TOKEN is missing, all
-// calls throw / probe returns false — the LLM router falls back
-// to OpenRouter or Ollama.
+// 120s timeout, 1 retry on transient failure.  If OPENROUTER_API_KEY
+// is missing, calls throw / probe returns false — the LLM router
+// falls back to OpenRouter (kimi-k2.5) or Ollama.
 // ============================================================
 
 import { config } from '../config.js';
@@ -22,11 +21,9 @@ export interface EdithResponse {
   latencyMs: number;
   tokensIn: number;
   tokensOut: number;
-  debug?: { endpointUsed: string; status: number };
+  debug?: { endpointUsed: string; status: number; model: string };
   raw?: unknown;
 }
-
-const TIMEOUT_MS = 120_000;
 
 async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
   const controller = new AbortController();
@@ -39,10 +36,9 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: numbe
 }
 
 /**
- * Make a single chat-completions call to the bridge.
- * Returns the parsed response or throws on any failure.
+ * Make a single chat-completions call directly to Moonshot API.
  */
-async function tryEndpoint(
+async function tryMoonshot(
   url: string,
   messages: Array<{ role: string; content: string }>,
 ): Promise<{ content: string; tokensIn: number; tokensOut: number; status: number; raw: unknown }> {
@@ -50,35 +46,26 @@ async function tryEndpoint(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...(config.edithToken ? { Authorization: `Bearer ${config.edithToken}` } : {}),
-      'x-openclaw-agent-id': 'main',
+      'Authorization': `Bearer ${config.openrouterApiKey}`,
     },
     body: JSON.stringify({
-      model: 'openclaw',
+      model: config.moonshotReasoningModel,
       messages,
-      max_tokens: 4096,
-      temperature: 0.7,
+      max_tokens: config.moonshotMaxTokens,
     }),
-  }, TIMEOUT_MS);
+  }, config.moonshotTimeout);
 
-  const contentType = res.headers.get('content-type') || '';
-  if (!res.ok || contentType.includes('text/html')) {
+  if (!res.ok) {
     const snippet = await res.text().catch(() => '');
-    throw new Error(`EDITH ${url} returned ${res.status} (${contentType}): ${snippet.slice(0, 200)}`);
+    throw new Error(`Moonshot ${url} returned ${res.status}: ${snippet.slice(0, 200)}`);
   }
 
   const data = await res.json() as {
     choices?: Array<{ message?: { content: string } }>;
     usage?: { prompt_tokens: number; completion_tokens: number };
-    content?: string;
-    response?: string;
   };
 
-  const content =
-    data.choices?.[0]?.message?.content ||
-    data.content ||
-    data.response ||
-    '';
+  const content = data.choices?.[0]?.message?.content || '';
 
   return {
     content,
@@ -90,8 +77,8 @@ async function tryEndpoint(
 }
 
 /**
- * Send a chat message through EDITH/OpenClaw via the bridge.
- * Single endpoint, 1 retry on transient failure.
+ * Send a chat message via Moonshot reasoning model (kimi-k2-thinking).
+ * 1 retry on transient failure.
  */
 export async function edithChat(
   message: string,
@@ -99,12 +86,12 @@ export async function edithChat(
   _userId?: string,
   _agentId?: string,
 ): Promise<EdithResponse> {
-  if (!config.edithGatewayUrl) {
-    throw new Error('EDITH_GATEWAY_URL is not configured');
+  if (!config.openrouterApiKey) {
+    throw new Error('Moonshot API key not configured (OPENROUTER_API_KEY)');
   }
 
-  const baseUrl = config.edithGatewayUrl.replace(/\/+$/, '');
-  const url = `${baseUrl}/v1/chat/completions`;
+  const baseUrl = config.openrouterBaseUrl.replace(/\/+$/, '');
+  const url = `${baseUrl}/chat/completions`;
 
   const messages: Array<{ role: string; content: string }> = [];
   if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
@@ -115,10 +102,10 @@ export async function edithChat(
 
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      const result = await tryEndpoint(url, messages);
+      const result = await tryMoonshot(url, messages);
       const latencyMs = Date.now() - start;
 
-      logger.info({ provider: 'edith', url, latencyMs, attempt }, 'EDITH response OK');
+      logger.info({ provider: 'edith', model: config.moonshotReasoningModel, latencyMs, attempt }, 'Moonshot reasoning response OK');
 
       return {
         text: result.content,
@@ -127,37 +114,37 @@ export async function edithChat(
         latencyMs,
         tokensIn: result.tokensIn,
         tokensOut: result.tokensOut,
-        debug: { endpointUsed: url, status: result.status },
+        debug: { endpointUsed: url, status: result.status, model: config.moonshotReasoningModel },
         raw: result.raw,
       };
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
-      logger.warn({ url, attempt, error: lastError.message }, 'EDITH request failed');
+      logger.warn({ url, attempt, error: lastError.message }, 'Moonshot reasoning request failed');
       if (attempt < 2) await new Promise((r) => setTimeout(r, 500));
     }
   }
 
-  throw lastError || new Error('EDITH request failed');
+  throw lastError || new Error('Moonshot reasoning request failed');
 }
 
 /**
- * Lightweight probe — can we reach the bridge?
- * Returns true if the bridge health endpoint responds with ws_connected: true.
+ * Lightweight probe — can we reach the Moonshot API?
+ * Sends a tiny completions request to verify the key works.
  */
 export async function edithProbe(): Promise<boolean> {
-  if (!config.edithGatewayUrl) return false;
+  if (!config.openrouterApiKey || !config.openrouterBaseUrl) return false;
 
-  const baseUrl = config.edithGatewayUrl.replace(/\/+$/, '');
+  const baseUrl = config.openrouterBaseUrl.replace(/\/+$/, '');
 
   try {
-    const res = await fetchWithTimeout(`${baseUrl}/health`, {
+    const res = await fetchWithTimeout(`${baseUrl}/models`, {
       method: 'GET',
-    }, 3000);
+      headers: {
+        'Authorization': `Bearer ${config.openrouterApiKey}`,
+      },
+    }, 5000);
 
-    if (!res.ok) return false;
-
-    const data = await res.json() as { ws_connected?: boolean };
-    return data.ws_connected === true;
+    return res.ok;
   } catch {
     return false;
   }
