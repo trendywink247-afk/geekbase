@@ -1,0 +1,25 @@
+{
+  "name": "GeekSpace — Personal AI OS",
+  "short_name": "GeekSpace",
+  "description": "Your personal AI operating system. Dashboard, agent chat, terminal, automations, and portfolio — all in one place.",
+  "start_url": "/dashboard",
+  "display": "standalone",
+  "background_color": "#05050A",
+  "theme_color": "#7B61FF",
+  "orientation": "any",
+  "categories": ["productivity", "developer-tools"],
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

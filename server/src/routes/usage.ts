@@ -74,6 +74,87 @@ usageRouter.get('/billing', requireAuth, (req: AuthRequest, res) => {
   });
 });
 
+// ---- Chart Data: Time-series for Recharts ----
+
+usageRouter.get('/chart', requireAuth, (req: AuthRequest, res) => {
+  const userId = req.userId!;
+  const range = (req.query.range as string) || '7d';
+  const group = (req.query.group as string) || 'day';
+
+  const days = range === '30d' ? 30 : range === '14d' ? 14 : 7;
+
+  // Daily aggregation
+  const rows = db.prepare(`
+    SELECT date(created_at) as day,
+           COUNT(*) as requests,
+           COALESCE(SUM(tokens_in + tokens_out), 0) as tokens,
+           COALESCE(SUM(cost_usd), 0) as cost,
+           provider
+    FROM usage_events
+    WHERE user_id = ? AND created_at >= datetime('now', '-${days} days')
+    GROUP BY date(created_at), provider
+    ORDER BY day ASC
+  `).all(userId) as Array<{ day: string; requests: number; tokens: number; cost: number; provider: string }>;
+
+  // Reshape for Recharts: one entry per day with provider breakdown
+  const dayMap = new Map<string, Record<string, unknown>>();
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const key = d.toISOString().split('T')[0];
+    dayMap.set(key, { day: key, label: d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }), requests: 0, tokens: 0, cost: 0 });
+  }
+
+  for (const row of rows) {
+    const entry = dayMap.get(row.day);
+    if (entry) {
+      entry.requests = (entry.requests as number) + row.requests;
+      entry.tokens = (entry.tokens as number) + row.tokens;
+      entry.cost = (entry.cost as number) + row.cost;
+      // Add provider-specific counts
+      entry[`requests_${row.provider}`] = row.requests;
+      entry[`tokens_${row.provider}`] = row.tokens;
+    }
+  }
+
+  res.json(Array.from(dayMap.values()));
+});
+
+// ---- Provider breakdown (pie/donut chart) ----
+
+usageRouter.get('/providers', requireAuth, (req: AuthRequest, res) => {
+  const userId = req.userId!;
+  const days = parseInt(req.query.days as string) || 30;
+
+  const rows = db.prepare(`
+    SELECT provider, COUNT(*) as requests,
+           COALESCE(SUM(tokens_in + tokens_out), 0) as tokens,
+           COALESCE(SUM(cost_usd), 0) as cost
+    FROM usage_events
+    WHERE user_id = ? AND created_at >= datetime('now', '-${days} days')
+    GROUP BY provider
+  `).all(userId);
+
+  res.json(rows);
+});
+
+// ---- Latency stats ----
+
+usageRouter.get('/latency', requireAuth, (req: AuthRequest, res) => {
+  const userId = req.userId!;
+
+  // We don't have latency in usage_events directly, so return request counts per hour
+  const rows = db.prepare(`
+    SELECT strftime('%H', created_at) as hour, COUNT(*) as requests
+    FROM usage_events
+    WHERE user_id = ? AND created_at >= datetime('now', '-7 days')
+    GROUP BY strftime('%H', created_at)
+    ORDER BY hour ASC
+  `).all(userId);
+
+  res.json(rows);
+});
+
 usageRouter.get('/events', requireAuth, (req: AuthRequest, res) => {
   const userId = req.userId!;
   const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);

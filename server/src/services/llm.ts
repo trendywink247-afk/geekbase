@@ -1,20 +1,22 @@
 // ============================================================
-// Tri-Brain LLM Router
+// Quad-Brain LLM Router
 //
 // Brain 1: Ollama (local) — fast/cheap, handles simple tasks
 // Brain 2: OpenRouter (global) — handles complex/coding/planning
-// Brain 3: EDITH/OpenClaw (via edith-bridge) — heavy reasoning
+// Brain 3: EDITH/OpenClaw (Moonshot) — heavy reasoning
+// Brain 4: PicoClaw (sidecar) — lightweight automation tasks
 //
 // Flow: Intent classify → Route → Call → Log usage
 // ============================================================
 
 import { config } from '../config.js';
 import { logger } from '../logger.js';
+import { isPicoClawAvailable, queryPicoClaw } from './picoclaw.js';
 
 // ---- Types ----
 
 export type Intent = 'simple' | 'planning' | 'coding' | 'automation' | 'complex';
-export type Provider = 'ollama' | 'openrouter' | 'edith' | 'builtin';
+export type Provider = 'ollama' | 'openrouter' | 'edith' | 'picoclaw' | 'builtin';
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -51,6 +53,7 @@ const PLANNING_KEYWORDS = [
 const AUTOMATION_KEYWORDS = [
   'automate', 'automation', 'cron', 'trigger', 'webhook', 'workflow',
   'schedule task', 'batch', 'pipeline', 'n8n', 'zapier',
+  'heartbeat', 'monitor', 'uptime', 'daily summary', 'notify', 'ping',
 ];
 
 export function classifyIntent(message: string): Intent {
@@ -106,6 +109,66 @@ function isOpenRouterAvailable(): boolean {
 function isEdithAvailable(): boolean {
   // Now checks for direct Moonshot API access (no longer needs EDITH bridge)
   return !!config.openrouterApiKey && !!config.openrouterBaseUrl;
+}
+
+// ---- Ollama Streaming Call ----
+
+export async function streamOllama(
+  messages: ChatMessage[],
+  onChunk: (text: string) => void,
+): Promise<{ tokensIn: number; tokensOut: number }> {
+  const response = await fetch(`${config.ollamaBaseUrl}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: config.ollamaModel,
+      messages,
+      stream: true,
+      options: { temperature: 0.7, num_predict: config.ollamaMaxTokens },
+    }),
+    signal: AbortSignal.timeout(config.ollamaTimeout),
+  });
+
+  if (!response.ok || !response.body) {
+    throw new Error(`Ollama stream returned ${response.status}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let tokensIn = 0;
+  let tokensOut = 0;
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    // Ollama sends newline-delimited JSON
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const data = JSON.parse(line) as {
+          message?: { content: string };
+          done?: boolean;
+          prompt_eval_count?: number;
+          eval_count?: number;
+        };
+        if (data.message?.content) {
+          onChunk(data.message.content);
+        }
+        if (data.done) {
+          tokensIn = data.prompt_eval_count || 0;
+          tokensOut = data.eval_count || 0;
+        }
+      } catch { /* skip malformed lines */ }
+    }
+  }
+
+  return { tokensIn, tokensOut };
 }
 
 // ---- Ollama Call ----
@@ -241,6 +304,7 @@ const CREDIT_RATES: Record<Provider, number> = {
   ollama:     0,
   openrouter: 5,   // kimi-k2.5 — standard cloud
   edith:      10,  // kimi-k2-thinking — heavy reasoning
+  picoclaw:   0,   // lightweight sidecar — free
   builtin:    0,
 };
 
@@ -260,6 +324,7 @@ function estimateCost(provider: Provider, tokensIn: number, tokensOut: number): 
     case 'ollama': return 0;
     case 'openrouter': return (tokensIn * 0.0000006) + (tokensOut * 0.000002);
     case 'edith': return (tokensIn * 0.0000012) + (tokensOut * 0.000004);
+    case 'picoclaw': return 0;
     case 'builtin': return 0;
     default: return 0;
   }
@@ -294,12 +359,19 @@ export async function routeChat(
 
   if (!opts?.forceProvider) {
     const ollamaOk = await isOllamaAvailable();
+    const picoOk = await isPicoClawAvailable();
 
-    if (ollamaOk) {
+    // Route automation intents to PicoClaw when available
+    if (picoOk && intent === 'automation') {
+      provider = 'picoclaw';
+    } else if (ollamaOk) {
       // Ollama is up — always use it (free tier)
       provider = 'ollama';
+    } else if (picoOk) {
+      // PicoClaw available as fallback when Ollama is down
+      provider = 'picoclaw';
     } else {
-      // Ollama is down — fall back to cloud if user has credits
+      // Both local engines down — fall back to cloud if user has credits
       const hasCredits = opts?.userCredits === undefined || opts.userCredits > 0;
       if (hasCredits && isEdithAvailable()) {
         provider = 'edith';
@@ -341,6 +413,16 @@ export async function routeChat(
         tokensIn = result.tokensIn;
         tokensOut = result.tokensOut;
         model = config.moonshotReasoningModel;
+        break;
+      }
+      case 'picoclaw': {
+        const userMsg = fullMessages[fullMessages.length - 1]?.content || '';
+        const sysMsg = fullMessages.find(m => m.role === 'system')?.content;
+        const result = await queryPicoClaw(userMsg, sysMsg);
+        reply = result.text;
+        tokensIn = result.tokensIn;
+        tokensOut = result.tokensOut;
+        model = 'picoclaw-haiku';
         break;
       }
       default: {

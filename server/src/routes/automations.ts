@@ -3,6 +3,12 @@ import { v4 as uuid } from 'uuid';
 import { requireAuth, type AuthRequest } from '../middleware/auth.js';
 import { validateBody, automationCreateSchema, automationUpdateSchema } from '../middleware/validate.js';
 import { db } from '../db/index.js';
+import {
+  executeManualTrigger,
+  executeWebhookTrigger,
+  onAutomationChanged,
+  getAutomationLogs,
+} from '../services/automations-engine.js';
 
 export const automationsRouter = Router();
 
@@ -20,6 +26,9 @@ automationsRouter.post('/', requireAuth, validateBody(automationCreateSchema), (
   );
 
   db.prepare(`INSERT INTO activity_log (id, user_id, action, details, icon) VALUES (?, ?, 'Created automation', ?, 'zap')`).run(uuid(), req.userId, name);
+
+  // Hot-reload engine
+  onAutomationChanged(id);
 
   const automation = db.prepare('SELECT * FROM automations WHERE id = ?').get(id);
   res.status(201).json(automation);
@@ -41,22 +50,48 @@ automationsRouter.patch('/:id', requireAuth, validateBody(automationUpdateSchema
 
   if (fields.length) { values.push(req.params.id, req.userId); db.prepare(`UPDATE automations SET ${fields.join(', ')} WHERE id = ? AND user_id = ?`).run(...values); }
 
+  // Hot-reload engine
+  onAutomationChanged(req.params.id);
+
   const automation = db.prepare('SELECT * FROM automations WHERE id = ?').get(req.params.id);
   res.json(automation);
 });
 
 automationsRouter.delete('/:id', requireAuth, (req: AuthRequest, res) => {
+  onAutomationChanged(req.params.id); // Unregister before delete
   const result = db.prepare('DELETE FROM automations WHERE id = ? AND user_id = ?').run(req.params.id, req.userId);
   if (result.changes === 0) { res.status(404).json({ error: 'Not found' }); return; }
   res.json({ success: true });
 });
 
-automationsRouter.post('/:id/trigger', requireAuth, (req: AuthRequest, res) => {
-  const automation = db.prepare('SELECT * FROM automations WHERE id = ? AND user_id = ?').get(req.params.id, req.userId) as Record<string, unknown> | undefined;
-  if (!automation) { res.status(404).json({ error: 'Not found' }); return; }
+// ---- Manual trigger (now uses real engine) ----
 
-  db.prepare('UPDATE automations SET run_count = run_count + 1, last_run = ? WHERE id = ?').run(new Date().toISOString(), req.params.id);
-  db.prepare(`INSERT INTO activity_log (id, user_id, action, details, icon) VALUES (?, ?, 'Triggered automation', ?, 'zap')`).run(uuid(), req.userId, automation.name as string);
+automationsRouter.post('/:id/trigger', requireAuth, async (req: AuthRequest, res) => {
+  const result = await executeManualTrigger(req.params.id, req.userId!);
+  res.json(result);
+});
 
-  res.json({ success: true, runCount: (automation.run_count as number) + 1 });
+// ---- Execution logs ----
+
+automationsRouter.get('/logs', requireAuth, (req: AuthRequest, res) => {
+  const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+  const logs = getAutomationLogs(req.userId!, undefined, limit);
+  res.json(logs);
+});
+
+automationsRouter.get('/:id/logs', requireAuth, (req: AuthRequest, res) => {
+  const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+  const logs = getAutomationLogs(req.userId!, req.params.id, limit);
+  res.json(logs);
+});
+
+// ---- Webhook endpoint (no auth — triggered by external services) ----
+
+automationsRouter.post('/webhook/:id', async (req, res) => {
+  const result = await executeWebhookTrigger(req.params.id, req.body);
+  if (!result.success && result.output.includes('not found')) {
+    res.status(404).json(result);
+  } else {
+    res.json(result);
+  }
 });

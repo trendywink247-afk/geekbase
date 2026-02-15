@@ -70,6 +70,11 @@ export const config = {
   moonshotTimeout: optionalInt('MOONSHOT_TIMEOUT_MS', 120000),
   moonshotMaxTokens: optionalInt('MOONSHOT_MAX_TOKENS', 8192),
 
+  // PicoClaw (lightweight sidecar — Brain 4)
+  picoClawUrl: optional('PICOCLAW_URL', 'http://localhost:8080'),
+  picoClawEnabled: optional('PICOCLAW_ENABLED', 'false') === 'true',
+  picoClawTimeout: optionalInt('PICOCLAW_TIMEOUT_MS', 5000),
+
   // Redis (job queue)
   redisUrl: optional('REDIS_URL', 'redis://localhost:6379'),
 

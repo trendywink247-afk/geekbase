@@ -3,11 +3,13 @@ import { v4 as uuid } from 'uuid';
 import { requireAuth, type AuthRequest } from '../middleware/auth.js';
 import { validateBody, chatSchema, commandSchema, agentConfigUpdateSchema } from '../middleware/validate.js';
 import { db } from '../db/index.js';
-import { routeChat, classifyIntent, computeCreditCost, type ChatMessage, type Provider } from '../services/llm.js';
+import { routeChat, classifyIntent, computeCreditCost, streamOllama, type ChatMessage, type Provider } from '../services/llm.js';
 import { edithChat } from '../services/edith.js';
 import { logger } from '../logger.js';
 import { config } from '../config.js';
 import { OPENCLAW_IDENTITY } from '../prompts/openclaw-system.js';
+import { checkKeywordTriggers } from '../services/automations-engine.js';
+import { buildMemoryContext, logConversation, extractMemories } from '../services/memory.js';
 
 export const agentRouter = Router();
 
@@ -17,6 +19,7 @@ function buildSystemPrompt(
   agentConfig: Record<string, unknown> | undefined,
   user: Record<string, unknown> | undefined,
   userId: string,
+  userMessage?: string,
 ): string {
   const agentName = (agentConfig?.name as string) || 'Geek';
   const voice = (agentConfig?.voice as string) || 'friendly';
@@ -27,12 +30,15 @@ function buildSystemPrompt(
   const reminderCount = (db.prepare('SELECT COUNT(*) as c FROM reminders WHERE user_id = ? AND completed = 0').get(userId) as { c: number })?.c || 0;
   const connectedCount = (db.prepare("SELECT COUNT(*) as c FROM integrations WHERE user_id = ? AND status = 'connected'").get(userId) as { c: number })?.c || 0;
 
+  // Inject memory context
+  const memoryBlock = buildMemoryContext(userId, userMessage);
+
   return `${OPENCLAW_IDENTITY}
 
 --- USER SESSION ---
 Agent name: ${agentName}. User: ${userName}. Voice: ${voice}. Mode: ${mode}.
 ${customPrompt ? `Custom instructions: ${customPrompt}` : ''}
-Active reminders: ${reminderCount}. Connected integrations: ${connectedCount}.`;
+Active reminders: ${reminderCount}. Connected integrations: ${connectedCount}.${memoryBlock}`;
 }
 
 // ---- Agent Config CRUD ----
@@ -82,11 +88,15 @@ agentRouter.post('/chat', requireAuth, validateBody(chatSchema), async (req: Aut
   try {
     const agentConfig = db.prepare('SELECT * FROM agent_configs WHERE user_id = ?').get(userId) as Record<string, unknown> | undefined;
     const user = db.prepare('SELECT name, credits FROM users WHERE id = ?').get(userId) as Record<string, unknown> | undefined;
-    const systemPrompt = buildSystemPrompt(agentConfig, user, userId);
+    const systemPrompt = buildSystemPrompt(agentConfig, user, userId, message);
     const userCredits = (user?.credits as number) || 0;
 
-    // ---- Parse route prefix: /premium, /edith, /local, or auto ----
-    let forceRoute: 'premium' | 'local' | null = null;
+    // Log user message + extract memories (non-blocking)
+    logConversation(userId, 'user', message);
+    extractMemories(userId, message);
+
+    // ---- Parse route prefix: /premium, /edith, /local, /pico, or auto ----
+    let forceRoute: 'premium' | 'local' | 'pico' | null = null;
 
     if (message.startsWith('/premium ') || message.startsWith('/edith ')) {
       forceRoute = 'premium';
@@ -95,6 +105,9 @@ agentRouter.post('/chat', requireAuth, validateBody(chatSchema), async (req: Aut
     } else if (message.startsWith('/local ')) {
       forceRoute = 'local';
       message = message.slice(7).trim();
+    } else if (message.startsWith('/pico ')) {
+      forceRoute = 'pico';
+      message = message.slice(6).trim();
     }
 
     // ---- Premium route: explicit opt-in via prefix ----
@@ -144,6 +157,9 @@ agentRouter.post('/chat', requireAuth, validateBody(chatSchema), async (req: Aut
       }
     }
 
+    // Fire keyword-based automation triggers (non-blocking)
+    checkKeywordTriggers(userId, message).catch(() => {});
+
     // ---- Default: local-first router (Ollama → cloud fallback if Ollama down) ----
     const messages: ChatMessage[] = [{ role: 'user', content: message }];
     const intent = classifyIntent(message);
@@ -152,7 +168,7 @@ agentRouter.post('/chat', requireAuth, validateBody(chatSchema), async (req: Aut
       systemPrompt,
       agentName: (agentConfig?.name as string) || 'Geek',
       userCredits,
-      forceProvider: forceRoute === 'local' ? 'ollama' : undefined,
+      forceProvider: forceRoute === 'local' ? 'ollama' : forceRoute === 'pico' ? 'picoclaw' : undefined,
     });
 
     // Determine tier from actual provider used
@@ -171,6 +187,9 @@ agentRouter.post('/chat', requireAuth, validateBody(chatSchema), async (req: Aut
     }
 
     const updatedCredits = (db.prepare('SELECT credits FROM users WHERE id = ?').get(userId) as { credits: number })?.credits ?? userCredits;
+
+    // Log assistant response
+    logConversation(userId, 'assistant', result.reply, result.provider, result.model);
 
     const response: Record<string, unknown> = {
       text: result.reply,
@@ -375,6 +394,83 @@ agentRouter.post('/command', requireAuth, validateBody(commandSchema), async (re
   if (cmd === 'clear') { res.json({ output: '', isError: false, clear: true }); return; }
 
   res.json({ output: `Command not found: ${command}\nType 'help' to see available commands.`, isError: true });
+});
+
+// ---- SSE Streaming Chat ----
+
+agentRouter.post('/chat/stream', requireAuth, validateBody(chatSchema), async (req: AuthRequest, res) => {
+  const { message } = req.body as { message: string };
+  const userId = req.userId!;
+
+  // Set SSE headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+
+  try {
+    const agentConfig = db.prepare('SELECT * FROM agent_configs WHERE user_id = ?').get(userId) as Record<string, unknown> | undefined;
+    const user = db.prepare('SELECT name, credits FROM users WHERE id = ?').get(userId) as Record<string, unknown> | undefined;
+    const systemPrompt = buildSystemPrompt(agentConfig, user, userId);
+
+    const fullMessages: ChatMessage[] = [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: message },
+    ];
+
+    const start = Date.now();
+    let fullReply = '';
+
+    const { tokensIn, tokensOut } = await streamOllama(fullMessages, (chunk) => {
+      fullReply += chunk;
+      res.write(`data: ${JSON.stringify({ text: chunk, done: false })}\n\n`);
+    });
+
+    const latencyMs = Date.now() - start;
+
+    // Log usage
+    db.prepare(`INSERT INTO usage_events (id, user_id, provider, model, tokens_in, tokens_out, cost_usd, channel, tool)
+      VALUES (?, ?, 'ollama', ?, ?, ?, 0, 'web', 'ai.chat.stream')`).run(
+      uuid(), userId, config.ollamaModel, tokensIn, tokensOut,
+    );
+
+    // Send final event
+    res.write(`data: ${JSON.stringify({
+      text: '', done: true, provider: 'ollama', model: config.ollamaModel,
+      latencyMs, tier: 'local', creditsUsed: 0,
+    })}\n\n`);
+  } catch (err) {
+    logger.error({ err, userId }, 'Stream chat error');
+    res.write(`data: ${JSON.stringify({ text: '', done: true, error: 'Stream failed' })}\n\n`);
+  }
+
+  res.end();
+});
+
+// ---- Memory Management ----
+
+agentRouter.get('/memory', requireAuth, (req: AuthRequest, res) => {
+  const { getMemories } = require('../services/memory.js');
+  const category = req.query.category as string | undefined;
+  const memories = getMemories(req.userId!, category);
+  res.json(memories);
+});
+
+agentRouter.delete('/memory/:id', requireAuth, (req: AuthRequest, res) => {
+  const { deleteMemory } = require('../services/memory.js');
+  const deleted = deleteMemory(req.userId!, req.params.id);
+  if (!deleted) { res.status(404).json({ error: 'Memory not found' }); return; }
+  res.json({ success: true });
+});
+
+// ---- Conversation History ----
+
+agentRouter.get('/conversations', requireAuth, (req: AuthRequest, res) => {
+  const { getRecentConversations } = require('../services/memory.js');
+  const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+  const conversations = getRecentConversations(req.userId!, limit);
+  res.json(conversations);
 });
 
 // ---- Public Portfolio Chat (real LLM-powered) ----

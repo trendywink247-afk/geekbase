@@ -14,6 +14,9 @@ import { errorHandler } from './middleware/errors.js';
 import { db } from './db/index.js';
 
 import { edithProbe } from './services/edith.js';
+import { picoClawProbe } from './services/picoclaw.js';
+import { initAutomationsEngine } from './services/automations-engine.js';
+import { initMemoryTables } from './services/memory.js';
 import { authRouter } from './routes/auth.js';
 import { usersRouter } from './routes/users.js';
 import { agentRouter } from './routes/agent.js';
@@ -118,6 +121,9 @@ app.get('/api/health', async (_req, res) => {
   // correctly rejects HTML responses and handles 401/403/405 as "reachable"
   const edithOk = await edithProbe();
 
+  // Live probe: PicoClaw (Brain 4 sidecar)
+  const picoOk = config.picoClawEnabled ? await picoClawProbe() : false;
+
   const allOk = dbOk;  // core requirement
   const code = allOk ? 200 : 503;
 
@@ -125,15 +131,17 @@ app.get('/api/health', async (_req, res) => {
     ok: allOk,
     status: allOk ? 'ok' : 'degraded',
     timestamp: new Date().toISOString(),
-    version: '2.2.0',
+    version: '2.3.0',
     uptime: Math.floor(process.uptime()),
     edith: edithOk,
     ollama: ollamaOk,
+    picoclaw: picoOk,
     components: {
       database: dbOk ? 'ok' : 'down',
       ollama: ollamaOk ? 'reachable' : (config.ollamaBaseUrl ? 'unreachable' : 'not_configured'),
       openrouter: config.openrouterApiKey ? 'configured' : 'not_configured',
       edith: edithOk ? 'reachable' : (config.edithGatewayUrl ? 'unreachable' : 'not_configured'),
+      picoclaw: picoOk ? 'reachable' : (config.picoClawEnabled ? 'unreachable' : 'not_configured'),
     },
   });
 });
@@ -171,5 +179,9 @@ app.listen(config.port, () => {
     env: config.env,
     corsOrigins: config.corsOrigins,
     ollamaUrl: config.ollamaBaseUrl,
-  }, `GeekSpace API v2.1.0 running on :${config.port}`);
+  }, `GeekSpace API v2.3.0 running on :${config.port}`);
+
+  // Initialize subsystems
+  initMemoryTables();
+  initAutomationsEngine();
 });
