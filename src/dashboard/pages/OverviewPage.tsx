@@ -60,30 +60,24 @@ const integrationColors: Record<string, string> = {
   linkedin: '#0a66c2',
 };
 
-// Chart data (demo — could be wired to usage_events aggregation later)
-const messageData = [
-  { name: 'Mon', messages: 120, api: 80 },
-  { name: 'Tue', messages: 150, api: 95 },
-  { name: 'Wed', messages: 180, api: 110 },
-  { name: 'Thu', messages: 140, api: 85 },
-  { name: 'Fri', messages: 200, api: 130 },
-  { name: 'Sat', messages: 90, api: 60 },
-  { name: 'Sun', messages: 110, api: 70 },
+// Chart data defaults (used when API hasn't returned yet)
+const emptyWeeklyData = [
+  { name: 'Mon', messages: 0, api: 0 },
+  { name: 'Tue', messages: 0, api: 0 },
+  { name: 'Wed', messages: 0, api: 0 },
+  { name: 'Thu', messages: 0, api: 0 },
+  { name: 'Fri', messages: 0, api: 0 },
+  { name: 'Sat', messages: 0, api: 0 },
+  { name: 'Sun', messages: 0, api: 0 },
 ];
 
-const taskCompletionData = [
-  { name: 'Completed', value: 68, color: '#61FF7B' },
-  { name: 'Pending', value: 23, color: '#FFD761' },
-  { name: 'Overdue', value: 9, color: '#FF6161' },
-];
-
-const hourlyActivity = [
-  { hour: '00:00', activity: 12 },
-  { hour: '04:00', activity: 5 },
-  { hour: '08:00', activity: 45 },
-  { hour: '12:00', activity: 78 },
-  { hour: '16:00', activity: 65 },
-  { hour: '20:00', activity: 42 },
+const emptyHourlyData = [
+  { hour: '00:00', activity: 0 },
+  { hour: '04:00', activity: 0 },
+  { hour: '08:00', activity: 0 },
+  { hour: '12:00', activity: 0 },
+  { hour: '16:00', activity: 0 },
+  { hour: '20:00', activity: 0 },
 ];
 
 export function OverviewPage({ onViewPortfolio, onNavigate, onRefresh, onOpenChat }: OverviewPageProps) {
@@ -94,6 +88,27 @@ export function OverviewPage({ onViewPortfolio, onNavigate, onRefresh, onOpenCha
 
   const user = useAuthStore((s) => s.user);
   const { stats, integrations, agent, reminders } = useDashboardStore();
+
+  // Derive chart data from API response (falls back to empty when not loaded)
+  const statsAny = stats as unknown as Record<string, unknown>;
+  const weeklyChartData = (statsAny.weeklyChartData as typeof emptyWeeklyData) || emptyWeeklyData;
+  const hourlyActivityData = (statsAny.hourlyActivity as typeof emptyHourlyData) || emptyHourlyData;
+
+  const reminderBreakdown = (statsAny.reminderBreakdown as { completed: number; pending: number; overdue: number }) || { completed: 0, pending: 0, overdue: 0 };
+  const totalReminders = reminderBreakdown.completed + reminderBreakdown.pending + reminderBreakdown.overdue;
+  const taskCompletionData = totalReminders > 0
+    ? [
+        { name: 'Completed', value: reminderBreakdown.completed, color: '#61FF7B' },
+        { name: 'Pending', value: reminderBreakdown.pending, color: '#FFD761' },
+        { name: 'Overdue', value: reminderBreakdown.overdue, color: '#FF6161' },
+      ]
+    : [
+        { name: 'Completed', value: 0, color: '#61FF7B' },
+        { name: 'Pending', value: 1, color: '#FFD761' },
+        { name: 'Overdue', value: 0, color: '#FF6161' },
+      ];
+
+  const credits = (statsAny.credits as number) ?? 0;
 
   useEffect(() => {
     setMounted(true);
@@ -194,7 +209,7 @@ export function OverviewPage({ onViewPortfolio, onNavigate, onRefresh, onOpenCha
             {greeting}, <span className="text-gradient">{user?.name?.split(' ')[0] || 'there'}</span>
           </h1>
           <p className="text-[#A7ACB8]">
-            Your agent has handled <span className="text-[#7B61FF] font-medium">{stats.messagesSent || 0} messages</span> this period
+            Your agent has handled <span className="text-[#7B61FF] font-medium">{stats.messagesSent || 0} messages</span> — <span className="text-[#61FF7B] font-medium">{credits.toLocaleString()} credits</span> remaining
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -265,7 +280,7 @@ export function OverviewPage({ onViewPortfolio, onNavigate, onRefresh, onOpenCha
             <div className="h-[250px]">
               {mounted && (
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={messageData}>
+                  <AreaChart data={weeklyChartData}>
                     <defs>
                       <linearGradient id="colorMessages" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="5%" stopColor="#7B61FF" stopOpacity={0.3}/>
@@ -397,7 +412,7 @@ export function OverviewPage({ onViewPortfolio, onNavigate, onRefresh, onOpenCha
               <div className="h-[180px]">
                 {mounted && (
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={hourlyActivity}>
+                    <BarChart data={hourlyActivityData}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#7B61FF10" vertical={false} />
                       <XAxis dataKey="hour" stroke="#A7ACB8" fontSize={11} tickLine={false} axisLine={false} />
                       <YAxis stroke="#A7ACB8" fontSize={11} tickLine={false} axisLine={false} />
@@ -532,7 +547,7 @@ export function OverviewPage({ onViewPortfolio, onNavigate, onRefresh, onOpenCha
             <CardContent>
               <div className="space-y-3">
                 {[
-                  { label: 'Model', value: agent.primaryModel || 'OpenClaw v2.1' },
+                  { label: 'Model', value: agent.primaryModel || 'qwen2.5-coder:7b' },
                   { label: 'Style', value: agent.mode ? agent.mode.charAt(0).toUpperCase() + agent.mode.slice(1) : 'Builder' },
                   { label: 'Response Time', value: stats.responseTimeMs > 0 ? `~${(stats.responseTimeMs / 1000).toFixed(1)}s` : '~1.2s' },
                   { label: 'Uptime', value: stats.agentUptime || '99.99%' },
