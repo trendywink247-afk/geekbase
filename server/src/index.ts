@@ -71,6 +71,7 @@ const authLimiter = rateLimit({
 });
 app.use('/api/auth/login', authLimiter);
 app.use('/api/auth/signup', authLimiter);
+app.use('/api/auth/demo', authLimiter);
 
 // ---- Rate limit on LLM chat endpoints (expensive) ----
 const chatLimiter = rateLimit({

@@ -345,8 +345,8 @@ export async function routeChat(
       }
       default: {
         // Builtin fallback — no LLM available
-        reply = `I'm currently running in offline mode — my AI brain (Ollama) isn't reachable at ${config.ollamaBaseUrl}. ` +
-          `Please check that Ollama is running and accessible. In the meantime, you can use terminal commands like \`gs reminders list\` or \`gs credits\`.`;
+        reply = `I'm currently running in offline mode — my AI backend isn't available right now. ` +
+          `Please try again shortly, or use terminal commands like \`gs reminders list\` or \`gs credits\`.`;
         model = 'builtin-fallback';
         tokensIn = userMessage.length;
         tokensOut = reply.length;
@@ -369,21 +369,21 @@ export async function routeChat(
           model = config.ollamaModel;
           provider = 'ollama';
         } catch {
-          reply = `I had trouble connecting to my AI backends. Error: ${errorMsg}. Please try again shortly.`;
+          reply = 'I had trouble connecting to my AI backends. Please try again shortly.';
           model = 'error-fallback';
           tokensIn = userMessage.length;
           tokensOut = reply.length;
           provider = 'builtin';
         }
       } else {
-        reply = `I had trouble connecting to my AI backends. Error: ${errorMsg}. Please try again shortly.`;
+        reply = 'I had trouble connecting to my AI backends. Please try again shortly.';
         model = 'error-fallback';
         tokensIn = userMessage.length;
         tokensOut = reply.length;
         provider = 'builtin';
       }
     } else {
-      reply = `I had trouble processing your request. Error: ${errorMsg}. Please try again.`;
+      reply = 'I had trouble processing your request. Please try again shortly.';
       model = 'error-fallback';
       tokensIn = userMessage.length;
       tokensOut = reply.length;

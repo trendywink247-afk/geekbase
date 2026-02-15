@@ -1,11 +1,23 @@
 import { Router } from 'express';
+import { z } from 'zod';
 import { db } from '../db/index.js';
+import { validateQuery } from '../middleware/validate.js';
 
 export const directoryRouter = Router();
 
-directoryRouter.get('/', (req, res) => {
-  const search = (req.query.search as string || '').toLowerCase();
-  const tag = (req.query.tag as string || '').toLowerCase();
+const directoryQuerySchema = z.object({
+  search: z.string().max(200).optional().default(''),
+  tag: z.string().max(100).optional().default(''),
+});
+
+/** Escape LIKE wildcards so user input is treated as literal text */
+function escapeLike(s: string): string {
+  return s.replace(/[%_\\]/g, '\\$&');
+}
+
+directoryRouter.get('/', validateQuery(directoryQuerySchema), (req, res) => {
+  const search = (req.query.search as string).toLowerCase();
+  const tag = (req.query.tag as string).toLowerCase();
 
   let query = `
     SELECT u.username, u.name, u.avatar, u.bio, u.location, u.tags,
@@ -17,14 +29,14 @@ directoryRouter.get('/', (req, res) => {
   const params: unknown[] = [];
 
   if (search) {
-    query += ` AND (LOWER(u.name) LIKE ? OR LOWER(u.bio) LIKE ? OR LOWER(u.tags) LIKE ? OR LOWER(p.skills) LIKE ? OR LOWER(p.headline) LIKE ?)`;
-    const s = `%${search}%`;
+    query += ` AND (LOWER(u.name) LIKE ? ESCAPE '\\' OR LOWER(u.bio) LIKE ? ESCAPE '\\' OR LOWER(u.tags) LIKE ? ESCAPE '\\' OR LOWER(p.skills) LIKE ? ESCAPE '\\' OR LOWER(p.headline) LIKE ? ESCAPE '\\')`;
+    const s = `%${escapeLike(search)}%`;
     params.push(s, s, s, s, s);
   }
 
   if (tag) {
-    query += ` AND (LOWER(u.tags) LIKE ? OR LOWER(p.skills) LIKE ?)`;
-    const t = `%${tag}%`;
+    query += ` AND (LOWER(u.tags) LIKE ? ESCAPE '\\' OR LOWER(p.skills) LIKE ? ESCAPE '\\')`;
+    const t = `%${escapeLike(tag)}%`;
     params.push(t, t);
   }
 

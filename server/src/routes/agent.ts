@@ -309,11 +309,15 @@ agentRouter.post('/command', requireAuth, validateBody(commandSchema), async (re
     const parts = cmd.slice(15).split(' ');
     const field = parts[0];
     const value = parts.slice(1).join(' ').replace(/^["']|["']$/g, '');
-    const allowed = ['name', 'bio', 'location', 'website', 'role', 'company'];
-    if (allowed.includes(field)) {
-      db.prepare(`UPDATE users SET ${field} = ? WHERE id = ?`).run(value, userId);
+    const PROFILE_FIELDS: Record<string, string> = {
+      name: 'name', bio: 'bio', location: 'location',
+      website: 'website', role: 'role', company: 'company',
+    };
+    const column = PROFILE_FIELDS[field];
+    if (column) {
+      db.prepare(`UPDATE users SET ${column} = ? WHERE id = ?`).run(value, userId);
       res.json({ output: `Updated ${field} to: ${value}`, isError: false });
-    } else { res.json({ output: `Unknown field: ${field}. Allowed: ${allowed.join(', ')}`, isError: true }); }
+    } else { res.json({ output: `Unknown field: ${field}. Allowed: ${Object.keys(PROFILE_FIELDS).join(', ')}`, isError: true }); }
     return;
   }
 
