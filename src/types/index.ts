@@ -235,8 +235,8 @@ export interface Portfolio {
 
 // ----- Automations -------------------------------------------
 
-export type AutomationTrigger = 'time' | 'event' | 'webhook';
-export type AutomationAction = 'n8n-webhook' | 'telegram-message' | 'portfolio-update' | 'manychat-broadcast';
+export type AutomationTrigger = 'time' | 'event' | 'webhook' | 'keyword' | 'health_down' | 'manual';
+export type AutomationAction = 'n8n-webhook' | 'telegram-message' | 'portfolio-update' | 'manychat-broadcast' | 'call_api' | 'create_reminder' | 'log';
 
 export interface Automation {
   id: string;
@@ -248,8 +248,69 @@ export interface Automation {
   config: Record<string, unknown>;
   enabled: boolean;
   lastRun?: string;
+  lastStatus?: string;
   runCount: number;
   createdAt: string;
+}
+
+export interface AutomationLog {
+  id: string;
+  automationId: string;
+  userId: string;
+  status: 'success' | 'error';
+  output: string;
+  durationMs: number;
+  createdAt: string;
+}
+
+// ----- Memory ------------------------------------------------
+
+export interface MemoryEntry {
+  id: string;
+  userId: string;
+  category: string;
+  key: string;
+  value: string;
+  confidence: number;
+  source: string;
+  accessCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ConversationEntry {
+  id: string;
+  userId: string;
+  role: 'user' | 'assistant';
+  content: string;
+  provider: string;
+  model: string;
+  summary: string;
+  tags: string;
+  createdAt: string;
+}
+
+// ----- Chart Data --------------------------------------------
+
+export interface ChartDataPoint {
+  day: string;
+  label: string;
+  requests: number;
+  tokens: number;
+  cost: number;
+  [key: string]: unknown; // provider-specific fields like requests_ollama
+}
+
+export interface ProviderBreakdown {
+  provider: string;
+  requests: number;
+  tokens: number;
+  cost: number;
+}
+
+export interface HourlyActivity {
+  hour: string;
+  requests: number;
 }
 
 // ----- Feature Toggles ---------------------------------------

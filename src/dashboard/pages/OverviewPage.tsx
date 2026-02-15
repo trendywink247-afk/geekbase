@@ -87,14 +87,21 @@ export function OverviewPage({ onViewPortfolio, onNavigate, onRefresh, onOpenCha
   const [mounted, setMounted] = useState(false);
 
   const user = useAuthStore((s) => s.user);
-  const { stats, integrations, agent, reminders } = useDashboardStore();
+  const { stats, integrations, agent, reminders, chartData, hourlyData } = useDashboardStore();
 
-  // Derive chart data from API response (falls back to empty when not loaded)
-  const statsAny = stats as unknown as Record<string, unknown>;
-  const weeklyChartData = (statsAny.weeklyChartData as typeof emptyWeeklyData) || emptyWeeklyData;
-  const hourlyActivityData = (statsAny.hourlyActivity as typeof emptyHourlyData) || emptyHourlyData;
+  // Map real chart data to weekly format (use API data if available, else fallback)
+  const weeklyChartData = chartData.length > 0
+    ? chartData.map(d => ({ name: d.label, messages: d.requests, api: d.tokens }))
+    : emptyWeeklyData;
+  const hourlyActivityData = hourlyData.length > 0
+    ? hourlyData.map(d => ({ hour: `${d.hour}:00`, activity: d.requests }))
+    : emptyHourlyData;
 
-  const reminderBreakdown = (statsAny.reminderBreakdown as { completed: number; pending: number; overdue: number }) || { completed: 0, pending: 0, overdue: 0 };
+  // Derive reminder breakdown from actual reminders
+  const completedCount = reminders.filter(r => r.completed).length;
+  const pendingCount = reminders.filter(r => !r.completed && new Date(r.datetime) >= new Date()).length;
+  const overdueCount = reminders.filter(r => !r.completed && new Date(r.datetime) < new Date()).length;
+  const reminderBreakdown = { completed: completedCount, pending: pendingCount, overdue: overdueCount };
   const totalReminders = reminderBreakdown.completed + reminderBreakdown.pending + reminderBreakdown.overdue;
   const taskCompletionData = totalReminders > 0
     ? [
@@ -108,7 +115,7 @@ export function OverviewPage({ onViewPortfolio, onNavigate, onRefresh, onOpenCha
         { name: 'Overdue', value: 0, color: '#FF6161' },
       ];
 
-  const credits = (statsAny.credits as number) ?? 0;
+  const credits = (stats as unknown as Record<string, unknown>).credits as number ?? 0;
 
   useEffect(() => {
     setMounted(true);

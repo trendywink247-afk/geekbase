@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect } from 'react';
-import { X, Send, Bot, Sparkles, Mic, Paperclip, RotateCcw } from 'lucide-react';
+import { useState, useRef, useEffect, useCallback } from 'react';
+import { X, Send, Bot, Sparkles, Mic, Paperclip, RotateCcw, Zap } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useAuthStore } from '@/stores/authStore';
@@ -11,6 +11,8 @@ interface ChatMessage {
   role: 'user' | 'agent';
   content: string;
   timestamp: Date;
+  provider?: string;
+  isStreaming?: boolean;
 }
 
 interface AgentChatPanelProps {
@@ -62,9 +64,9 @@ export function AgentChatPanel({ isOpen, onClose, agentOwner }: AgentChatPanelPr
     }
   }, [isOpen]);
 
-  const sendMessage = (text?: string) => {
+  const sendMessage = useCallback((text?: string) => {
     const content = text || input.trim();
-    if (!content) return;
+    if (!content || isTyping) return;
 
     const userMsg: ChatMessage = {
       id: Date.now().toString(),
@@ -73,33 +75,116 @@ export function AgentChatPanel({ isOpen, onClose, agentOwner }: AgentChatPanelPr
       timestamp: new Date(),
     };
 
+    const agentMsgId = (Date.now() + 1).toString();
+
     setMessages((prev) => [...prev, userMsg]);
     setInput('');
     setIsTyping(true);
 
-    // Call real backend API
+    // Try SSE streaming first, fall back to regular chat
     (async () => {
       try {
-        const { data } = await agentService.chat(content);
-        const agentMsg: ChatMessage = {
-          id: (Date.now() + 1).toString(),
-          role: 'agent',
-          content: data.text,
-          timestamp: new Date(),
-        };
-        setMessages((prev) => [...prev, agentMsg]);
-      } catch {
+        const res = await agentService.chatStream(content);
+
+        if (!res.ok || !res.body) {
+          // Fallback to non-streaming
+          const { data } = await agentService.chat(content);
+          setMessages((prev) => [...prev, {
+            id: agentMsgId,
+            role: 'agent',
+            content: data.text,
+            timestamp: new Date(),
+            provider: data.provider,
+          }]);
+          setIsTyping(false);
+          return;
+        }
+
+        // Add empty streaming message
         setMessages((prev) => [...prev, {
-          id: (Date.now() + 1).toString(),
+          id: agentMsgId,
           role: 'agent',
-          content: "Sorry, I couldn't process that right now. Please try again.",
+          content: '',
           timestamp: new Date(),
+          isStreaming: true,
         }]);
+        setIsTyping(false);
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            const jsonStr = line.slice(6).trim();
+            if (!jsonStr) continue;
+
+            try {
+              const chunk = JSON.parse(jsonStr);
+              if (chunk.text) {
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === agentMsgId
+                      ? { ...m, content: m.content + chunk.text }
+                      : m
+                  )
+                );
+              }
+              if (chunk.done) {
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === agentMsgId
+                      ? { ...m, isStreaming: false, provider: chunk.provider }
+                      : m
+                  )
+                );
+              }
+            } catch {
+              // skip malformed chunks
+            }
+          }
+        }
+
+        // Ensure streaming flag is cleared
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === agentMsgId ? { ...m, isStreaming: false } : m
+          )
+        );
+      } catch {
+        // Full fallback — try regular chat
+        try {
+          const { data } = await agentService.chat(content);
+          setMessages((prev) => {
+            const hasAgent = prev.some(m => m.id === agentMsgId);
+            if (hasAgent) {
+              return prev.map(m => m.id === agentMsgId ? { ...m, content: data.text, isStreaming: false, provider: data.provider } : m);
+            }
+            return [...prev, { id: agentMsgId, role: 'agent' as const, content: data.text, timestamp: new Date(), provider: data.provider }];
+          });
+        } catch {
+          setMessages((prev) => {
+            const hasAgent = prev.some(m => m.id === agentMsgId);
+            const errMsg = { id: agentMsgId, role: 'agent' as const, content: "Sorry, I couldn't process that right now. Please try again.", timestamp: new Date() };
+            if (hasAgent) {
+              return prev.map(m => m.id === agentMsgId ? { ...m, content: errMsg.content, isStreaming: false } : m);
+            }
+            return [...prev, errMsg];
+          });
+        }
       } finally {
         setIsTyping(false);
       }
     })();
-  };
+  }, [input, isTyping]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -178,6 +263,12 @@ export function AgentChatPanel({ isOpen, onClose, agentOwner }: AgentChatPanelPr
                 }`}
               >
                 {msg.content}
+                {msg.isStreaming && <span className="inline-block w-1.5 h-4 bg-[#7B61FF] ml-0.5 animate-pulse rounded-sm" />}
+                {msg.provider && !msg.isStreaming && (
+                  <span className="block mt-1.5 text-[10px] text-[#A7ACB8]/60 flex items-center gap-1">
+                    <Zap className="w-2.5 h-2.5" /> {msg.provider}
+                  </span>
+                )}
               </div>
             </div>
           ))}

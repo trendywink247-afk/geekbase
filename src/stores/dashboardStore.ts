@@ -9,6 +9,8 @@ import type {
   FeatureToggles,
   ReminderChannel,
   ReminderCategory,
+  ChartDataPoint,
+  HourlyActivity,
 } from '@/types';
 import {
   dashboardService,
@@ -56,6 +58,8 @@ interface DashboardStore {
   reminders: Reminder[];
   automations: Automation[];
   features: FeatureToggles;
+  chartData: ChartDataPoint[];
+  hourlyData: HourlyActivity[];
   isLoading: boolean;
   error: string | null;
 
@@ -82,6 +86,8 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
   reminders: [],
   automations: [],
   features: fallbackFeatures,
+  chartData: [],
+  hourlyData: [],
   isLoading: false,
   error: null,
 
@@ -89,7 +95,7 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
     set({ isLoading: true, error: null });
     try {
       // Fire all API calls in parallel
-      const [statsRes, usageRes, agentRes, intRes, remRes, autoRes, featRes] = await Promise.allSettled([
+      const [statsRes, usageRes, agentRes, intRes, remRes, autoRes, featRes, chartRes, hourlyRes] = await Promise.allSettled([
         dashboardService.stats(),
         usageService.summary('month'),
         agentService.getConfig(),
@@ -97,6 +103,8 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
         reminderService.list(),
         automationService.list(),
         featureService.get(),
+        usageService.chart('7d'),
+        usageService.latency(),
       ]);
 
       set({
@@ -107,6 +115,8 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
         reminders: remRes.status === 'fulfilled' ? remRes.value.data : [],
         automations: autoRes.status === 'fulfilled' ? autoRes.value.data : [],
         features: featRes.status === 'fulfilled' ? featRes.value.data : fallbackFeatures,
+        chartData: chartRes.status === 'fulfilled' ? chartRes.value.data : [],
+        hourlyData: hourlyRes.status === 'fulfilled' ? hourlyRes.value.data : [],
         isLoading: false,
       });
     } catch {

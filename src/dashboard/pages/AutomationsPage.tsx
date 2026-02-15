@@ -16,6 +16,12 @@ import {
   Globe,
   MessageSquare,
   RefreshCw,
+  Hand,
+  Hash,
+  HeartPulse,
+  FileText,
+  Phone,
+  Bell,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -30,18 +36,27 @@ const triggerIcons: Record<AutomationTrigger, typeof Clock> = {
   time: CalendarClock,
   event: Activity,
   webhook: Webhook,
+  manual: Hand,
+  keyword: Hash,
+  health_down: HeartPulse,
 };
 
 const triggerLabels: Record<AutomationTrigger, string> = {
   time: 'Scheduled',
   event: 'Event-based',
   webhook: 'Webhook',
+  manual: 'Manual',
+  keyword: 'Keyword',
+  health_down: 'Health Check',
 };
 
 const triggerColors: Record<AutomationTrigger, string> = {
   time: '#FFD761',
   event: '#61FF7B',
   webhook: '#7B61FF',
+  manual: '#A7ACB8',
+  keyword: '#FF61DC',
+  health_down: '#FF6161',
 };
 
 const actionIcons: Record<AutomationAction, typeof Send> = {
@@ -49,6 +64,9 @@ const actionIcons: Record<AutomationAction, typeof Send> = {
   'telegram-message': Send,
   'portfolio-update': RefreshCw,
   'manychat-broadcast': MessageSquare,
+  'call_api': Phone,
+  'create_reminder': Bell,
+  'log': FileText,
 };
 
 const actionLabels: Record<AutomationAction, string> = {
@@ -56,6 +74,9 @@ const actionLabels: Record<AutomationAction, string> = {
   'telegram-message': 'Telegram Message',
   'portfolio-update': 'Portfolio Update',
   'manychat-broadcast': 'ManyChat Broadcast',
+  'call_api': 'API Call',
+  'create_reminder': 'Create Reminder',
+  'log': 'Log',
 };
 
 export function AutomationsPage() {

@@ -15,10 +15,16 @@ import type {
   Reminder,
   Portfolio,
   Automation,
+  AutomationLog,
   DashboardStats,
   DirectoryProfile,
   OnboardingState,
   FeatureToggles,
+  MemoryEntry,
+  ConversationEntry,
+  ChartDataPoint,
+  ProviderBreakdown,
+  HourlyActivity,
 } from '@/types';
 
 // ----- Axios instance ----------------------------------------
@@ -96,6 +102,20 @@ export const agentService = {
   chat: (message: string, channel: string = 'web') =>
     api.post<{ text: string; route: string; latencyMs: number; provider: string }>('/agent/chat', { message, channel }),
 
+  /** SSE streaming chat — returns a ReadableStream */
+  chatStream: async (message: string, channel: string = 'web') => {
+    const token = localStorage.getItem('gs_token');
+    const res = await fetch(`${API_URL}/agent/chat/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ message, channel }),
+    });
+    return res;
+  },
+
   executeCommand: (command: string) =>
     api.post<{ output: string; isError: boolean }>('/agent/command', { command }),
 };
@@ -126,6 +146,14 @@ export const usageService = {
     api.get<{ events: import('@/types').UsageEvent[]; total: number }>(
       `/usage/events?page=${page}&limit=${limit}`,
     ),
+
+  chart: (range: '7d' | '14d' | '30d' = '7d') =>
+    api.get<ChartDataPoint[]>(`/usage/chart?range=${range}`),
+
+  providers: (days = 30) =>
+    api.get<ProviderBreakdown[]>(`/usage/providers?days=${days}`),
+
+  latency: () => api.get<HourlyActivity[]>('/usage/latency'),
 };
 
 // ----- Integrations ------------------------------------------
@@ -222,6 +250,29 @@ export const featureService = {
 export const contactService = {
   submit: (data: { name: string; email: string; company?: string; message: string }) =>
     api.post<{ success: boolean; message: string }>('/dashboard/contact', data),
+};
+
+// ----- Memory ------------------------------------------------
+
+export const memoryService = {
+  list: (category?: string) =>
+    api.get<MemoryEntry[]>('/agent/memory', { params: category ? { category } : undefined }),
+
+  delete: (memoryId: string) =>
+    api.delete(`/agent/memory/${memoryId}`),
+
+  conversations: (limit = 20) =>
+    api.get<ConversationEntry[]>(`/agent/conversations?limit=${limit}`),
+};
+
+// ----- Automation Logs ---------------------------------------
+
+export const automationLogService = {
+  list: (limit = 50) =>
+    api.get<AutomationLog[]>(`/automations/logs?limit=${limit}`),
+
+  forAutomation: (automationId: string, limit = 50) =>
+    api.get<AutomationLog[]>(`/automations/${automationId}/logs?limit=${limit}`),
 };
 
 // ----- Public Agent Chat -------------------------------------

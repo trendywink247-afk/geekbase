@@ -16,7 +16,10 @@ import {
   Palette,
   Plus,
   Trash2,
-  DollarSign
+  DollarSign,
+  Brain,
+  Tag,
+  Clock
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -28,8 +31,8 @@ import { Separator } from '@/components/ui/separator';
 import { useAuthStore } from '@/stores/authStore';
 import { useDashboardStore } from '@/stores/dashboardStore';
 import { useThemeStore } from '@/stores/themeStore';
-import { userService, apiKeyService } from '@/services/api';
-import type { ApiProvider } from '@/types';
+import { userService, apiKeyService, memoryService } from '@/services/api';
+import type { ApiProvider, MemoryEntry } from '@/types';
 
 export function SettingsPage() {
   const [isSaving, setIsSaving] = useState(false);
@@ -68,12 +71,37 @@ export function SettingsPage() {
   const [newKeyValue, setNewKeyValue] = useState('');
   const [showAddKey, setShowAddKey] = useState(false);
 
+  // Memory state
+  const [memories, setMemories] = useState<MemoryEntry[]>([]);
+  const [memoryFilter, setMemoryFilter] = useState<string>('all');
+  const [memoriesLoading, setMemoriesLoading] = useState(false);
+
   // Load API keys from backend on mount
   useEffect(() => {
     apiKeyService.list().then(({ data }) => {
       setApiKeys(data.map(k => ({ id: k.id, provider: k.provider, label: k.label, maskedKey: k.maskedKey })));
     }).catch(() => {});
   }, []);
+
+  // Load memories when memory tab is active
+  useEffect(() => {
+    if (activeTab === 'memory') {
+      setMemoriesLoading(true);
+      memoryService.list(memoryFilter === 'all' ? undefined : memoryFilter)
+        .then(({ data }) => setMemories(data))
+        .catch(() => {})
+        .finally(() => setMemoriesLoading(false));
+    }
+  }, [activeTab, memoryFilter]);
+
+  const handleDeleteMemory = async (memoryId: string) => {
+    try {
+      await memoryService.delete(memoryId);
+      setMemories(memories.filter(m => m.id !== memoryId));
+    } catch {
+      // keep local state
+    }
+  };
 
   const handleSave = async () => {
     setIsSaving(true);
@@ -151,6 +179,9 @@ export function SettingsPage() {
           </TabsTrigger>
           <TabsTrigger value="billing" className="data-[state=active]:bg-[#7B61FF] data-[state=active]:text-white">
             <CreditCard className="w-4 h-4 mr-2" />Billing
+          </TabsTrigger>
+          <TabsTrigger value="memory" className="data-[state=active]:bg-[#7B61FF] data-[state=active]:text-white">
+            <Brain className="w-4 h-4 mr-2" />Memory
           </TabsTrigger>
           <TabsTrigger value="privacy" className="data-[state=active]:bg-[#7B61FF] data-[state=active]:text-white">
             <Eye className="w-4 h-4 mr-2" />Privacy
@@ -428,6 +459,97 @@ export function SettingsPage() {
                     <span className="font-mono text-sm text-[#A7ACB8]">${cost.toFixed(2)}</span>
                   </div>
                 ))}
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Memory Tab */}
+        <TabsContent value="memory" className="space-y-6">
+          <Card className="bg-[#0B0B10] border-[#7B61FF]/20">
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle>Agent Memory</CardTitle>
+                  <CardDescription className="text-[#A7ACB8]">What your AI assistant remembers about you</CardDescription>
+                </div>
+                <div className="flex gap-2">
+                  {['all', 'fact', 'preference'].map((cat) => (
+                    <button
+                      key={cat}
+                      onClick={() => setMemoryFilter(cat)}
+                      className={`px-3 py-1.5 rounded-lg text-xs capitalize transition-all ${
+                        memoryFilter === cat
+                          ? 'bg-[#7B61FF]/20 border border-[#7B61FF] text-[#7B61FF]'
+                          : 'bg-[#0B0B10] border border-[#7B61FF]/20 text-[#A7ACB8]'
+                      }`}
+                    >
+                      {cat}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {memoriesLoading ? (
+                <div className="flex items-center justify-center py-8">
+                  <div className="w-6 h-6 border-2 border-[#7B61FF] border-t-transparent rounded-full animate-spin" />
+                </div>
+              ) : memories.length === 0 ? (
+                <div className="text-center py-8">
+                  <Brain className="w-10 h-10 text-[#7B61FF]/30 mx-auto mb-3" />
+                  <p className="text-[#A7ACB8] mb-2">No memories yet</p>
+                  <p className="text-sm text-[#A7ACB8]">Your agent learns about you through conversations</p>
+                </div>
+              ) : (
+                memories.map((memory) => (
+                  <div key={memory.id} className="flex items-start justify-between p-4 rounded-xl bg-[#05050A] border border-[#7B61FF]/20 group hover:border-[#7B61FF]/40 transition-all">
+                    <div className="flex items-start gap-3 flex-1">
+                      <div className="w-8 h-8 rounded-lg flex items-center justify-center mt-0.5" style={{
+                        backgroundColor: memory.category === 'fact' ? '#61FF7B15' : '#7B61FF15'
+                      }}>
+                        <Tag className="w-4 h-4" style={{
+                          color: memory.category === 'fact' ? '#61FF7B' : '#7B61FF'
+                        }} />
+                      </div>
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-sm font-medium text-[#F4F6FF]">{memory.key}</span>
+                          <Badge variant="outline" className="text-[10px] border-[#7B61FF]/30 text-[#A7ACB8]">{memory.category}</Badge>
+                        </div>
+                        <p className="text-sm text-[#A7ACB8]">{memory.value}</p>
+                        <div className="flex items-center gap-3 mt-2 text-[10px] text-[#A7ACB8]/60">
+                          <span className="flex items-center gap-1"><Clock className="w-2.5 h-2.5" /> {new Date(memory.updatedAt || memory.createdAt).toLocaleDateString()}</span>
+                          <span>Confidence: {Math.round(memory.confidence * 100)}%</span>
+                          <span>Source: {memory.source}</span>
+                        </div>
+                      </div>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleDeleteMemory(memory.id)}
+                      className="text-[#FF6161] hover:text-[#FF6161] opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </Button>
+                  </div>
+                ))
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="bg-gradient-to-r from-[#7B61FF]/10 to-transparent border-[#7B61FF]/20">
+            <CardContent className="p-4">
+              <div className="flex items-start gap-3">
+                <Brain className="w-5 h-5 text-[#7B61FF] flex-shrink-0 mt-0.5" />
+                <div>
+                  <h4 className="text-sm font-medium text-[#F4F6FF] mb-1">How Memory Works</h4>
+                  <p className="text-xs text-[#A7ACB8]">
+                    Your agent learns about you through conversations — extracting facts, preferences, and context.
+                    Memories improve response quality over time. You can delete any memory at any time.
+                  </p>
+                </div>
               </div>
             </CardContent>
           </Card>
