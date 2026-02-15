@@ -107,7 +107,7 @@ export function ExplorePage() {
               <button
                 key={tag}
                 onClick={() => setActiveTag(tag)}
-                className={`px-4 py-1.5 rounded-full text-sm transition-all ${
+                className={`px-4 py-1.5 min-h-[36px] rounded-full text-sm transition-all ${
                   activeTag === tag
                     ? 'bg-[#7B61FF] text-white'
                     : 'bg-[#0B0B10] border border-[#7B61FF]/20 text-[#A7ACB8] hover:border-[#7B61FF]/50'
@@ -195,7 +195,7 @@ export function ExplorePage() {
                   {profile.agentEnabled && (
                     <button
                       onClick={(e) => handleChat(e, profile)}
-                      className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg bg-[#7B61FF]/10 border border-[#7B61FF]/20 text-xs text-[#7B61FF] hover:bg-[#7B61FF]/20 transition-colors"
+                      className="flex-1 flex items-center justify-center gap-1.5 py-2.5 min-h-[40px] rounded-lg bg-[#7B61FF]/10 border border-[#7B61FF]/20 text-xs text-[#7B61FF] hover:bg-[#7B61FF]/20 transition-colors"
                     >
                       <MessageSquare className="w-3.5 h-3.5" />
                       Chat
@@ -203,7 +203,7 @@ export function ExplorePage() {
                   )}
                   <button
                     onClick={() => navigate(`/portfolio/${profile.username}`)}
-                    className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg bg-[#05050A] border border-[#7B61FF]/20 text-xs text-[#A7ACB8] hover:text-[#F4F6FF] hover:border-[#7B61FF]/40 transition-colors"
+                    className="flex-1 flex items-center justify-center gap-1.5 py-2.5 min-h-[40px] rounded-lg bg-[#05050A] border border-[#7B61FF]/20 text-xs text-[#A7ACB8] hover:text-[#F4F6FF] hover:border-[#7B61FF]/40 transition-colors"
                   >
                     <Eye className="w-3.5 h-3.5" />
                     View

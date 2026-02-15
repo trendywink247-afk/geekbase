@@ -210,7 +210,7 @@ export function AgentChatPanel({ isOpen, onClose, agentOwner }: AgentChatPanelPr
                 <button
                   key={prompt}
                   onClick={() => sendMessage(prompt)}
-                  className="block w-full text-left px-4 py-2.5 rounded-xl bg-[#05050A] border border-[#7B61FF]/20 text-sm text-[#A7ACB8] hover:text-[#F4F6FF] hover:border-[#7B61FF]/40 transition-colors"
+                  className="block w-full text-left px-4 py-2.5 min-h-[44px] rounded-xl bg-[#05050A] border border-[#7B61FF]/20 text-sm text-[#A7ACB8] hover:text-[#F4F6FF] hover:border-[#7B61FF]/40 transition-colors"
                 >
                   {prompt}
                 </button>
@@ -222,7 +222,7 @@ export function AgentChatPanel({ isOpen, onClose, agentOwner }: AgentChatPanelPr
         </div>
 
         {/* Input */}
-        <div className="p-4 border-t border-[#7B61FF]/20 bg-[#05050A]">
+        <div className="p-4 border-t border-[#7B61FF]/20 bg-[#05050A] pb-[max(1rem,env(safe-area-inset-bottom))]">
           <div className="flex items-center gap-2">
             <button className="p-2 rounded-lg hover:bg-[#7B61FF]/10 transition-colors" title="Attach file">
               <Paperclip className="w-4 h-4 text-[#A7ACB8]" />

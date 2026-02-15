@@ -28,7 +28,7 @@ export function HeroSection({ onEnterDashboard, onWatchDemo }: HeroSectionProps)
       {/* Central Glow Effect */}
       <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
         <div 
-          className={`w-[600px] h-[600px] rounded-full transition-all duration-1000 ${
+          className={`w-[300px] h-[300px] md:w-[600px] md:h-[600px] rounded-full transition-all duration-1000 ${
             isLoaded ? 'opacity-100 scale-100' : 'opacity-0 scale-75'
           }`}
           style={{
@@ -74,7 +74,7 @@ export function HeroSection({ onEnterDashboard, onWatchDemo }: HeroSectionProps)
       </div>
 
       {/* Content */}
-      <div className="relative z-10 text-center px-4 max-w-5xl mx-auto mt-[35vh]">
+      <div className="relative z-10 text-center px-4 max-w-5xl mx-auto mt-[30vh] md:mt-[35vh]">
         {/* Micro Label */}
         <div 
           className={`mb-6 transition-all duration-700 delay-100 ${

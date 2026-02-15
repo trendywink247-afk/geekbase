@@ -111,7 +111,7 @@ export function PortfolioView() {
           </div>
           <div className="flex items-center gap-2">
             {portfolio.agentEnabled && !chatOpen && (
-              <Button onClick={() => setChatOpen(true)} variant="outline" className="border-[#7B61FF]/30 hover:bg-[#7B61FF]/10">
+              <Button onClick={() => setChatOpen(true)} variant="outline" className="hidden lg:inline-flex border-[#7B61FF]/30 hover:bg-[#7B61FF]/10">
                 <MessageSquare className="w-4 h-4 mr-2 text-[#7B61FF]" />
                 Chat with Agent
               </Button>
@@ -335,6 +335,100 @@ export function PortfolioView() {
           )}
         </div>
       </main>
+
+      {/* Mobile Chat FAB */}
+      {portfolio.agentEnabled && !chatOpen && (
+        <button
+          onClick={() => setChatOpen(true)}
+          className="lg:hidden fixed bottom-6 right-6 z-50 w-14 h-14 rounded-full bg-[#7B61FF] hover:bg-[#6B51EF] shadow-lg shadow-[#7B61FF]/30 flex items-center justify-center transition-transform active:scale-95"
+          aria-label="Chat with agent"
+        >
+          <MessageSquare className="w-6 h-6 text-white" />
+        </button>
+      )}
+
+      {/* Mobile Chat Overlay */}
+      {chatOpen && portfolio.agentEnabled && (
+        <div className="lg:hidden fixed inset-0 z-[60] bg-[#0B0B10] flex flex-col">
+          {/* Chat header */}
+          <div className="flex items-center justify-between p-4 border-b border-[#7B61FF]/20 bg-[#05050A] safe-area-pt">
+            <div className="flex items-center gap-3">
+              <div className="relative">
+                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-[#7B61FF] to-[#FF61DC] flex items-center justify-center font-bold text-sm">{portfolio.avatar}</div>
+                <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-[#61FF7B] border-2 border-[#05050A]" />
+              </div>
+              <div>
+                <div className="font-semibold text-sm">{firstName}'s Agent</div>
+                <div className="text-xs text-[#61FF7B]">Online</div>
+              </div>
+            </div>
+            <button onClick={() => setChatOpen(false)} className="p-2 rounded-lg hover:bg-[#7B61FF]/10 transition-colors min-w-[44px] min-h-[44px] flex items-center justify-center">
+              <X className="w-5 h-5 text-[#A7ACB8]" />
+            </button>
+          </div>
+
+          {/* Messages */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-3">
+            {chatHistory.map((msg, i) => (
+              <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                {msg.role === 'agent' && (
+                  <div className="w-6 h-6 rounded-full bg-[#7B61FF]/20 flex items-center justify-center mr-2 flex-shrink-0 mt-1">
+                    <Bot className="w-3 h-3 text-[#7B61FF]" />
+                  </div>
+                )}
+                <div className={`max-w-[80%] px-3 py-2.5 rounded-2xl text-sm ${
+                  msg.role === 'user'
+                    ? 'bg-[#7B61FF] text-white rounded-br-md'
+                    : 'bg-[#05050A] text-[#F4F6FF] border border-[#7B61FF]/20 rounded-bl-md'
+                }`}>
+                  {msg.message}
+                </div>
+              </div>
+            ))}
+            {isTyping && (
+              <div className="flex justify-start">
+                <div className="w-6 h-6 rounded-full bg-[#7B61FF]/20 flex items-center justify-center mr-2 flex-shrink-0 mt-1">
+                  <Bot className="w-3 h-3 text-[#7B61FF]" />
+                </div>
+                <div className="bg-[#05050A] border border-[#7B61FF]/20 px-4 py-3 rounded-2xl rounded-bl-md">
+                  <div className="flex gap-1.5">
+                    {[0, 1, 2].map((i) => (
+                      <div key={i} className="w-2 h-2 rounded-full bg-[#7B61FF]/60" style={{ animation: `typing-dot 1.2s ease-in-out ${i * 0.2}s infinite` }} />
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Suggested questions */}
+            {chatHistory.length <= 1 && !isTyping && (
+              <div className="space-y-1.5 pt-1">
+                <p className="text-[10px] text-[#A7ACB8] uppercase tracking-wider">Try asking</p>
+                {suggestedQuestions.map((q) => (
+                  <button key={q} onClick={() => handleSendMessage(q)} className="block w-full text-left px-3 py-2.5 min-h-[44px] rounded-lg bg-[#05050A] border border-[#7B61FF]/20 text-sm text-[#A7ACB8] hover:text-[#F4F6FF] hover:border-[#7B61FF]/40 transition-colors">
+                    {q}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div ref={chatEndRef} />
+          </div>
+
+          {/* Input */}
+          <div className="p-3 border-t border-[#7B61FF]/20 bg-[#05050A] flex gap-2 safe-area-pb">
+            <Input
+              value={chatMessage}
+              onChange={(e) => setChatMessage(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
+              placeholder="Ask anything..."
+              className="flex-1 bg-[#0B0B10] border-[#7B61FF]/30 text-[#F4F6FF]"
+            />
+            <Button onClick={() => handleSendMessage()} disabled={!chatMessage.trim() || isTyping} className="bg-[#7B61FF] hover:bg-[#6B51EF]">
+              <Send className="w-4 h-4" />
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* Footer */}
       <footer className="py-8 border-t border-[#7B61FF]/10">

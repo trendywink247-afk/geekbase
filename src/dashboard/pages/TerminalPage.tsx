@@ -280,14 +280,15 @@ Deploy ID: dep_${Date.now().toString(36)}`,
   };
 
   return (
-    <div className="space-y-4 h-[calc(100vh-140px)] flex flex-col">
+    <div className="space-y-4 h-[calc(100dvh-220px)] md:h-[calc(100vh-140px)] flex flex-col">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-3xl font-bold mb-1" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>Terminal</h1>
-          <p className="text-[#A7ACB8] flex items-center gap-2">
+          <h1 className="text-2xl sm:text-3xl font-bold mb-1" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>Terminal</h1>
+          <p className="text-[#A7ACB8] flex items-center gap-2 text-sm">
             <Bot className="w-4 h-4 text-[#7B61FF]" />
-            Direct CLI access to GeekSpace API + AI Agent
+            <span className="hidden sm:inline">Direct CLI access to GeekSpace API + AI Agent</span>
+            <span className="sm:hidden">CLI + AI Agent</span>
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -296,7 +297,7 @@ Deploy ID: dep_${Date.now().toString(36)}`,
             <span className="text-xs text-[#61FF7B] font-mono">AI Ready</span>
           </div>
           <Button variant="outline" size="sm" onClick={clearTerminal} className="border-[#7B61FF]/30 text-[#A7ACB8]">
-            <Trash2 className="w-4 h-4 mr-2" />Clear
+            <Trash2 className="w-4 h-4 sm:mr-2" /><span className="hidden sm:inline">Clear</span>
           </Button>
         </div>
       </div>
@@ -381,7 +382,7 @@ Deploy ID: dep_${Date.now().toString(36)}`,
           <button
             key={cmd}
             onClick={() => executeCommand(cmd)}
-            className={`px-3 py-1.5 rounded-lg border text-xs transition-colors ${
+            className={`px-3 py-2.5 min-h-[36px] rounded-lg border text-xs transition-colors ${
               cmd.startsWith('ai ')
                 ? 'bg-[#7B61FF]/10 border-[#7B61FF]/30 text-[#7B61FF] hover:bg-[#7B61FF]/20'
                 : 'bg-[#0B0B10] border-[#7B61FF]/20 text-[#A7ACB8] hover:border-[#7B61FF]/50 hover:text-[#F4F6FF]'
