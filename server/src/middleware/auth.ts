@@ -2,6 +2,7 @@ import type { Request, Response, NextFunction } from 'express';
 import jwtPkg from 'jsonwebtoken';
 import type { SignOptions } from 'jsonwebtoken';
 import { config } from '../config.js';
+import { db } from '../db/index.js';
 
 const { sign, verify, TokenExpiredError } = jwtPkg as any;
 
@@ -21,6 +22,15 @@ export function requireAuth(req: AuthRequest, res: Response, next: NextFunction)
       algorithms: ['HS256'],
     }) as { sub: string };
     req.userId = payload.sub;
+
+    // Update last_active timestamp (non-blocking, fire-and-forget)
+    try {
+      db.prepare('UPDATE users SET last_active = ? WHERE id = ?').run(
+        new Date().toISOString(),
+        payload.sub,
+      );
+    } catch { /* ignore — column may not exist on first deploy */ }
+
     next();
   } catch (err) {
     const message = err instanceof TokenExpiredError ? 'Token expired' : 'Invalid token';

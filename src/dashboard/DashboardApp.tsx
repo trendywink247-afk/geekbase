@@ -1,15 +1,16 @@
-import { useState, useEffect, lazy, Suspense } from 'react';
+import { useState, useEffect, useCallback, lazy, Suspense } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, Link2, Bot, Bell, Terminal, Settings, Zap,
   User, LogOut, ChevronRight, Sparkles, DollarSign, Compass, Palette,
-  X, Menu
+  X, Menu, Clock
 } from 'lucide-react';
 import { AlexButton } from '@/components/AlexButton';
 import { AgentChatPanel } from '@/components/AgentChatPanel';
 import { AgentDesignWizard } from '@/components/AgentDesignWizard';
 import { useAuthStore } from '@/stores/authStore';
 import { useDashboardStore } from '@/stores/dashboardStore';
+import { useIdleTimeout } from '@/hooks/useIdleTimeout';
 
 // ---- Lazy loaded pages for code splitting ----
 const OverviewPage = lazy(() => import('./pages/OverviewPage').then(m => ({ default: m.OverviewPage })));
@@ -71,10 +72,17 @@ export function DashboardApp() {
     { id: 'settings', label: 'Settings', icon: Settings },
   ];
 
-  const handleLogout = () => {
+  const handleLogout = useCallback(() => {
     logout();
     navigate('/');
-  };
+  }, [logout, navigate]);
+
+  // Session idle timeout — warn at 25 min, logout at 30 min
+  const { showWarning: showIdleWarning, secondsLeft, dismissWarning } = useIdleTimeout({
+    idleMs: 25 * 60 * 1000,
+    warningMs: 5 * 60 * 1000,
+    onLogout: handleLogout,
+  });
 
   const renderPage = () => {
     switch (currentPage) {
@@ -202,6 +210,22 @@ export function DashboardApp() {
 
   return (
     <div className="min-h-screen bg-[#05050A] flex flex-col md:flex-row">
+      {/* ---- Session idle warning ---- */}
+      {showIdleWarning && (
+        <div className="fixed top-0 left-0 right-0 z-[100] flex items-center justify-center gap-3 px-4 py-3 bg-[#FFD761]/10 border-b border-[#FFD761]/30 backdrop-blur-sm">
+          <Clock className="w-4 h-4 text-[#FFD761] shrink-0" />
+          <span className="text-sm text-[#FFD761]">
+            Session expiring in <span className="font-mono font-bold">{Math.floor(secondsLeft / 60)}:{String(secondsLeft % 60).padStart(2, '0')}</span> due to inactivity
+          </span>
+          <button
+            onClick={dismissWarning}
+            className="ml-2 px-3 py-1 text-xs font-medium rounded-md bg-[#FFD761] text-[#05050A] hover:bg-[#FFD761]/80 transition-colors"
+          >
+            Stay logged in
+          </button>
+        </div>
+      )}
+
       {/* ---- Mobile overlay backdrop ---- */}
       {sidebarOpen && (
         <div

@@ -51,6 +51,7 @@ db.exec(`
     privacy_show_activity INTEGER DEFAULT 1,
     privacy_allow_chat INTEGER DEFAULT 1,
     privacy_show_location INTEGER DEFAULT 1,
+    last_active TEXT DEFAULT (datetime('now')),
     created_at TEXT DEFAULT (datetime('now'))
   );
 
@@ -205,6 +206,11 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_agent_configs_user ON agent_configs(user_id);
   CREATE INDEX IF NOT EXISTS idx_usage_events_user_date ON usage_events(user_id, created_at);
 `);
+
+// ── Migrations (safe to run on existing DBs) ────────────────
+try {
+  db.exec(`ALTER TABLE users ADD COLUMN last_active TEXT DEFAULT (datetime('now'))`);
+} catch { /* column already exists — ignore */ }
 
 // ── Seed demo data ──────────────────────────────────────────
 

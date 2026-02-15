@@ -87,6 +87,9 @@ export const config = {
   trialDays: optionalInt('TRIAL_DAYS', 3),
   trialPremiumCredits: optionalInt('TRIAL_PREMIUM_CREDITS', 10000),
 
+  // Session
+  sessionIdleTimeoutMs: optionalInt('SESSION_IDLE_TIMEOUT_MS', 30 * 60 * 1000), // 30 min
+
   // Request limits
   maxRequestBodyBytes: optionalInt('MAX_REQUEST_BODY_BYTES', 1024 * 1024), // 1MB
 
